@@ -320,15 +320,26 @@ enum Organizer {
     ## 整理后的正文
     去掉口头禅和无意义的重复，修正明显的同音错字，补上标点，合理分段，保持原意。
     如果能看出是多人对话，用“甲：”“乙：”区分说话人。不要编造原文没有的内容。
+
+    关于时间标记：如果原文每行开头有 [起-止]（单位是秒），说明这句在录音里的位置。
+    - 「整理后的正文」每一段（每个人说的每一段话）开头必须写上 {起-止}，起取这段对应的第一句的起，止取对应的最后一句的止，例如：{12.3-25.8} 甲：……
+    - 「要点」和「待办」每条结尾也写上 {起-止}，指向原文里出处的那几句。
+    - 「摘要」不用写。原文没有时间标记就都不用写。
     """
 
-    static func organize(transcript: String, provider: LLMProvider, apiKey: String,
-                         baseURL: String, model: String) async throws -> String {
+    static func organize(transcript: String, segments: [TranscriptSegment], provider: LLMProvider,
+                         apiKey: String, baseURL: String, model: String) async throws -> String {
+        let source: String
+        if segments.isEmpty {
+            source = transcript
+        } else {
+            source = segments.map { "[\(fmt($0.start))-\(fmt($0.end))] \($0.text)" }.joined(separator: "\n")
+        }
         let body: [String: Any] = [
             "model": model,
             "messages": [
                 ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": "下面是录音转写原文：\n\n" + transcript],
+                ["role": "user", "content": "下面是录音转写原文：\n\n" + source],
             ],
             "temperature": 0.3,
             "stream": false,
@@ -336,6 +347,10 @@ enum Organizer {
         _ = provider // 新版 GLM Flash 不支持关闭思考，不再传 thinking 参数
         let out = try await OpenAIClient.chat(baseURL: baseURL, apiKey: apiKey, body: body, timeout: 600)
         return clean(out)
+    }
+
+    private static func fmt(_ t: Double) -> String {
+        String(format: "%.1f", t)
     }
 
     static func test(provider: LLMProvider, apiKey: String, baseURL: String, model: String) async throws -> String {
@@ -368,7 +383,7 @@ enum Organizer {
         for line in markdown.components(separatedBy: "\n") {
             let l = line.trimmingCharacters(in: .whitespaces)
             if l.hasPrefix("# ") {
-                let title = String(l.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                let title = OrganizedParser.stripMarkers(String(l.dropFirst(2))).trimmingCharacters(in: .whitespaces)
                 return title.isEmpty ? nil : String(title.prefix(30))
             }
         }

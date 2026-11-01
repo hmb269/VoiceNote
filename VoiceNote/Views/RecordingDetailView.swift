@@ -13,14 +13,37 @@ struct RecordingDetailView: View {
     @State private var editing: TranscriptSegment?
     @State private var editText = ""
     @AppStorage("playSingleSentence") private var singleSentence = true
+    @State private var shareItem: ShareItem?
+    @State private var exporting = false
+    @State private var exportError: String?
 
     private var isBusy: Bool { processor.busy.contains(rec.id) }
 
     private var segments: [TranscriptSegment] { rec.segments }
 
-    private var currentSegmentID: UUID? {
+    private var organizedLines: [OrganizedLine] {
+        OrganizedParser.parse(rec.summary, segments: segments)
+    }
+
+    private var currentLineID: Int? { activeLineID(in: organizedLines) }
+
+    private func activeLineID(in lines: [OrganizedLine]) -> Int? {
         guard player.isPlaying || player.current > 0 else { return nil }
-        return segments.first(where: { $0.contains(player.current) })?.id
+        let t = player.current
+        // 取开始时间最晚、且包含当前时间的那行
+        return lines
+            .filter { line in
+                guard let s = line.start, let e = line.end else { return false }
+                return t >= s && t < e
+            }
+            .max(by: { ($0.start ?? 0) < ($1.start ?? 0) })?.id
+    }
+
+    private var currentSegmentID: UUID? { activeSegmentID(in: segments) }
+
+    private func activeSegmentID(in segs: [TranscriptSegment]) -> UUID? {
+        guard player.isPlaying || player.current > 0 else { return nil }
+        return segs.first(where: { $0.contains(player.current) })?.id
     }
 
     var body: some View {
@@ -43,6 +66,12 @@ struct RecordingDetailView: View {
             guard let id, player.isPlaying, tab == 1 else { return }
             withAnimation(.easeInOut(duration: 0.25)) {
                 proxy.scrollTo(id, anchor: .center)
+            }
+        }
+        .onChange(of: currentLineID) { _, id in
+            guard let id, player.isPlaying, tab == 0 else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                proxy.scrollTo("line-\(id)", anchor: .center)
             }
         }
         }
@@ -117,6 +146,25 @@ struct RecordingDetailView: View {
                 let t = newTitle.trimmingCharacters(in: .whitespaces)
                 if !t.isEmpty { rec.title = t }
             }
+        }
+        .sheet(item: $shareItem) { item in
+            ActivityView(items: item.items)
+                .presentationDetents([.medium, .large])
+        }
+        .overlay {
+            if exporting {
+                ProgressView("正在剪切录音…")
+                    .padding(20)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            }
+        }
+        .alert("出错了", isPresented: Binding(
+            get: { exportError != nil },
+            set: { if !$0 { exportError = nil } }
+        )) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(exportError ?? "")
         }
         .alert("已复制", isPresented: $copied) {
             Button("好", role: .cancel) {}
@@ -209,7 +257,7 @@ struct RecordingDetailView: View {
                 Text(rec.hasSpeech ? "还没整理，点上面的「AI 整理」。" : "先转写，再整理。")
                     .foregroundStyle(.secondary)
             } else {
-                MarkdownLite(text: rec.summary)
+                organizedList
             }
         } else {
             if rec.transcript.isEmpty {
@@ -226,7 +274,9 @@ struct RecordingDetailView: View {
     }
 
     private var segmentList: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        let segs = segments
+        let activeID = activeSegmentID(in: segs)
+        return VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Toggle(isOn: $singleSentence) {
                     Text("点一句只播这一句").font(.footnote)
@@ -238,8 +288,8 @@ struct RecordingDetailView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 6)
-            ForEach(segments) { seg in
-                let active = seg.id == currentSegmentID
+            ForEach(segs) { seg in
+                let active = seg.id == activeID
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Text(formatDuration(seg.start))
                         .font(.caption.monospacedDigit())
@@ -268,7 +318,82 @@ struct RecordingDetailView: View {
                         editText = seg.text
                         editing = seg
                     } label: { Label("改字", systemImage: "pencil") }
+                    Button {
+                        shareClip(start: seg.start, end: seg.end, text: seg.text)
+                    } label: { Label("分享这句录音", systemImage: "square.and.arrow.up") }
                 }
+            }
+        }
+    }
+
+    private var organizedList: some View {
+        let lines = organizedLines
+        let activeID = activeLineID(in: lines)
+        let hasAnyTime = lines.contains { $0.hasTime }
+        return VStack(alignment: .leading, spacing: 6) {
+            if hasAnyTime {
+                Text("带 ▶︎ 的段落点一下就播放对应录音，长按可以分享这段录音")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 4)
+            } else if !segments.isEmpty {
+                Text("点「重新整理」后，正文和要点就能点击播放")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 4)
+            }
+            ForEach(lines) { line in
+                let active = line.id == activeID
+                MarkdownLine(raw: line.text, playable: line.hasTime)
+                    .padding(.vertical, line.hasTime ? 3 : 0)
+                    .padding(.horizontal, line.hasTime ? 4 : 0)
+                    .background(active ? Color.accentColor.opacity(0.15) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 8))
+                    .contentShape(Rectangle())
+                    .id("line-\(line.id)")
+                    .onTapGesture {
+                        if let s = line.start, let e = line.end {
+                            player.play(from: s, until: singleSentence ? e : nil)
+                        }
+                    }
+                    .contextMenu {
+                        if let s = line.start, let e = line.end {
+                            Button {
+                                player.play(from: s, until: e)
+                            } label: { Label("只播这一段", systemImage: "play") }
+                            Button {
+                                player.play(from: s, until: nil)
+                            } label: { Label("从这里往下播", systemImage: "play.square.stack") }
+                            Button {
+                                shareClip(start: s, end: e, text: MarkdownLine.plain(line.text))
+                            } label: { Label("分享这段录音", systemImage: "square.and.arrow.up") }
+                        }
+                        Button {
+                            UIPasteboard.general.string = MarkdownLine.plain(line.text)
+                        } label: { Label("复制这段文字", systemImage: "doc.on.doc") }
+                    }
+            }
+            Toggle(isOn: $singleSentence) {
+                Text("点一段只播这一段").font(.footnote)
+            }
+            .padding(.top, 8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func shareClip(start: Double, end: Double, text: String) {
+        guard !exporting else { return }
+        exporting = true
+        let title = "\(rec.title) \(formatDuration(start).replacingOccurrences(of: ":", with: "′"))"
+        let source = rec.fileURL
+        Task {
+            do {
+                let url = try await ClipExporter.export(source: source, start: start, end: end, title: title)
+                exporting = false
+                shareItem = ShareItem(items: [url])
+            } catch {
+                exporting = false
+                exportError = error.localizedDescription
             }
         }
     }
@@ -276,7 +401,7 @@ struct RecordingDetailView: View {
     private var exportText: String {
         var parts: [String] = []
         if !rec.summary.isEmpty {
-            parts.append(rec.summary)
+            parts.append(OrganizedParser.stripMarkers(rec.summary))
         } else {
             parts.append("# \(rec.title)")
         }
@@ -317,22 +442,25 @@ struct PlayerView: View {
     }
 }
 
-/// 简单的 Markdown 显示：标题、列表、待办、加粗
-struct MarkdownLite: View {
-    let text: String
+/// 一行 Markdown：标题、列表、待办、加粗
+struct MarkdownLine: View {
+    let raw: String
+    var playable = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(text.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
-                row(line)
+        let line = raw.trimmingCharacters(in: .whitespaces)
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            content(line)
+            if playable {
+                Image(systemName: "play.fill")
+                    .font(.caption2)
+                    .foregroundStyle(Color.accentColor)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .textSelection(.enabled)
     }
 
-    @ViewBuilder private func row(_ raw: String) -> some View {
-        let line = raw.trimmingCharacters(in: .whitespaces)
+    @ViewBuilder private func content(_ line: String) -> some View {
         if line.hasPrefix("### ") {
             Text(inline(String(line.dropFirst(4)))).font(.subheadline.bold()).padding(.top, 4)
         } else if line.hasPrefix("## ") {
@@ -359,4 +487,29 @@ struct MarkdownLite: View {
     private func inline(_ s: String) -> AttributedString {
         (try? AttributedString(markdown: s)) ?? AttributedString(s)
     }
+
+    /// 去掉 Markdown 符号，用于复制
+    static func plain(_ raw: String) -> String {
+        var t = raw.trimmingCharacters(in: .whitespaces)
+        for p in ["### ", "## ", "# ", "- [ ] ", "- [x] ", "- [X] ", "- ", "* "] where t.hasPrefix(p) {
+            t = String(t.dropFirst(p.count))
+            break
+        }
+        return t.replacingOccurrences(of: "**", with: "")
+    }
+}
+
+struct ShareItem: Identifiable {
+    let id = UUID()
+    let items: [Any]
+}
+
+struct ActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }

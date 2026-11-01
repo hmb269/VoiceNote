@@ -129,7 +129,7 @@ struct RecordingRow: View {
     }
 
     private var previewText: String {
-        let src = rec.summary.isEmpty ? rec.transcript : rec.summary
+        let src = rec.summary.isEmpty ? rec.transcript : OrganizedParser.stripMarkers(rec.summary)
         return src.components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !$0.hasPrefix("#") }

@@ -194,6 +194,7 @@ final class Processor: ObservableObject {
 
         do {
             let md = try await Organizer.organize(transcript: rec.transcript,
+                                                  segments: rec.segments,
                                                   provider: provider,
                                                   apiKey: key,
                                                   baseURL: AppConfig.llmBaseURL(provider),
