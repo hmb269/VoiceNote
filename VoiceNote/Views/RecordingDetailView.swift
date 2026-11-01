@@ -133,7 +133,8 @@ struct RecordingDetailView: View {
 
     /// 每一页：顶部信息 + 吸顶的切换条 + 内容。左右滑动切换整理/原文
     private func page<Content: View>(index: Int, @ViewBuilder content: () -> Content) -> some View {
-        ScrollViewReader { proxy in
+        let body = content()
+        return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18, pinnedViews: [.sectionHeaders]) {
                     VStack(alignment: .leading, spacing: 18) {
@@ -145,7 +146,7 @@ struct RecordingDetailView: View {
                     .padding(.top, 6)
 
                     Section {
-                        content()
+                        body
                             .padding(.horizontal, 16)
                             .padding(.bottom, 110)
                     } header: {
