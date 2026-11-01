@@ -1,3 +1,5 @@
+import AVFoundation
+import CoreMedia
 import Foundation
 import Speech
 
@@ -21,14 +23,25 @@ enum AppleTranscriber {
         guard await requestAuth() else {
             throw VNError("没有语音识别权限，请到 设置 → 隐私与安全性 → 语音识别 里打开")
         }
+        let separator = (localeID.hasPrefix("zh") || localeID.hasPrefix("yue")) ? "" : " "
+
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            if let text = try await ModernTranscriber.transcribe(url: url, localeID: localeID,
+                                                                 separator: separator, progress: progress) {
+                return text
+            }
+        }
+        #endif
+
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeID)) else {
             throw VNError("这台手机不支持 \(localeID) 的语音识别")
         }
         guard recognizer.isAvailable else {
-            throw VNError("语音识别暂时不可用，稍后再试")
+            throw VNError("语音识别暂时不可用，检查网络后再试")
         }
 
-        let chunks = try AudioTools.splitToWav(url: url, chunkSeconds: 50)
+        let chunks = try AudioTools.splitToWav(url: url, chunkSeconds: 30)
         defer { AudioTools.cleanup(chunks) }
 
         var parts: [String] = []
@@ -39,16 +52,15 @@ enum AppleTranscriber {
             if !t.isEmpty { parts.append(t) }
             progress(Double(i + 1) / Double(chunks.count))
         }
-        return parts.joined(separator: "\n")
+        return parts.joined(separator: separator)
     }
 
     private static func recognize(_ url: URL, with recognizer: SFSpeechRecognizer) async throws -> String {
         let request = SFSpeechURLRecognitionRequest(url: url)
         request.shouldReportPartialResults = false
         request.addsPunctuation = true
-        if recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = true
-        }
+        request.taskHint = .dictation
+        // 不强制本机：苹果服务器识别更准，本机模型只在没网时兜底
         let box = OnceBox()
         return try await withCheckedThrowingContinuation { cont in
             _ = recognizer.recognitionTask(with: request) { result, error in
@@ -72,6 +84,57 @@ enum AppleTranscriber {
         }
     }
 }
+
+// MARK: - iOS 26+ 新版长音频识别（SpeechAnalyzer）
+
+#if compiler(>=6.2)
+@available(iOS 26.0, *)
+enum ModernTranscriber {
+    /// 返回 nil 表示这个语言新引擎不支持，交给旧引擎
+    static func transcribe(url: URL, localeID: String, separator: String,
+                           progress: @escaping (Double) -> Void) async throws -> String? {
+        guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: localeID)) else {
+            return nil
+        }
+        let transcriber = SpeechTranscriber(locale: locale,
+                                            transcriptionOptions: [],
+                                            reportingOptions: [],
+                                            attributeOptions: [.audioTimeRange])
+        do {
+            if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+                try await request.downloadAndInstall()
+            }
+        } catch {
+            return nil
+        }
+
+        let file = try AVAudioFile(forReading: url)
+        let total = max(1, Double(file.length) / file.processingFormat.sampleRate)
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+
+        let collector = Task { () -> [String] in
+            var parts: [String] = []
+            for try await result in transcriber.results {
+                guard result.isFinal else { continue }
+                let t = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !t.isEmpty { parts.append(t) }
+                let end = result.range.end.seconds
+                if end.isFinite { progress(min(0.99, end / total)) }
+            }
+            return parts
+        }
+
+        if let last = try await analyzer.analyzeSequence(from: file) {
+            try await analyzer.finalizeAndFinish(through: last)
+        } else {
+            await analyzer.cancelAndFinishNow()
+        }
+        let parts = try await collector.value
+        progress(1)
+        return parts.joined(separator: separator)
+    }
+}
+#endif
 
 // MARK: - 阿里云百炼 Qwen-ASR
 
@@ -187,7 +250,7 @@ enum Organizer {
 
     static func organize(transcript: String, provider: LLMProvider, apiKey: String,
                          baseURL: String, model: String) async throws -> String {
-        var body: [String: Any] = [
+        let body: [String: Any] = [
             "model": model,
             "messages": [
                 ["role": "system", "content": systemPrompt],
@@ -196,9 +259,7 @@ enum Organizer {
             "temperature": 0.3,
             "stream": false,
         ]
-        if provider == .zhipu {
-            body["thinking"] = ["type": "disabled"]
-        }
+        _ = provider // 新版 GLM Flash 不支持关闭思考，不再传 thinking 参数
         let out = try await OpenAIClient.chat(baseURL: baseURL, apiKey: apiKey, body: body, timeout: 600)
         return clean(out)
     }
