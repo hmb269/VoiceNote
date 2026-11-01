@@ -1,0 +1,109 @@
+import Foundation
+import SwiftData
+
+enum RecordingStatus: String, Codable {
+    case idle, transcribing, organizing, done, failed
+}
+
+enum RecordingSource: String, Codable {
+    case phone, watch, imported
+
+    var icon: String {
+        switch self {
+        case .phone: return "iphone"
+        case .watch: return "applewatch"
+        case .imported: return "square.and.arrow.down"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .phone: return "手机录音"
+        case .watch: return "手表录音"
+        case .imported: return "导入"
+        }
+    }
+}
+
+@Model
+final class Recording {
+    @Attribute(.unique) var id: UUID
+    var title: String
+    var createdAt: Date
+    var duration: Double
+    var fileName: String
+    var sourceRaw: String
+    var transcript: String
+    var summary: String
+    var statusRaw: String
+    var errorMessage: String
+    var engineUsed: String
+    var autoPending: Bool
+
+    init(title: String, createdAt: Date, duration: Double, fileName: String, source: RecordingSource) {
+        self.id = UUID()
+        self.title = title
+        self.createdAt = createdAt
+        self.duration = duration
+        self.fileName = fileName
+        self.sourceRaw = source.rawValue
+        self.transcript = ""
+        self.summary = ""
+        self.statusRaw = RecordingStatus.idle.rawValue
+        self.errorMessage = ""
+        self.engineUsed = ""
+        self.autoPending = true
+    }
+
+    var status: RecordingStatus {
+        get { RecordingStatus(rawValue: statusRaw) ?? .idle }
+        set { statusRaw = newValue.rawValue }
+    }
+
+    var source: RecordingSource {
+        RecordingSource(rawValue: sourceRaw) ?? .phone
+    }
+
+    var fileURL: URL {
+        Storage.recordingsDir.appendingPathComponent(fileName)
+    }
+
+    var hasSpeech: Bool {
+        !transcript.isEmpty && transcript != Recording.noSpeechText
+    }
+
+    static let noSpeechText = "（没有识别到说话内容）"
+
+    static func defaultTitle(for date: Date, source: RecordingSource) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "M月d日 HH:mm"
+        return "\(source.label) \(f.string(from: date))"
+    }
+}
+
+enum Storage {
+    static var recordingsDir: URL {
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent("Recordings", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
+}
+
+struct VNError: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
+}
+
+func formatDuration(_ t: Double) -> String {
+    let total = Int(t.rounded())
+    let h = total / 3600
+    let m = (total % 3600) / 60
+    let s = total % 60
+    if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+    return String(format: "%d:%02d", m, s)
+}

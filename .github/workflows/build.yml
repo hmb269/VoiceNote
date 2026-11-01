@@ -1,0 +1,74 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -project VoiceNote.xcodeproj \
+            -scheme VoiceNote \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build > build.log 2>&1 || {
+              echo "::group::Errors"
+              grep -E "error:|fatal error" build.log | head -80
+              echo "::endgroup::"
+              tail -150 build.log
+              exit 1
+            }
+          grep -E "warning:" build.log | sort -u | head -40 || true
+
+      - name: Package IPA
+        run: |
+          APP=build/Build/Products/Release-iphoneos/VoiceNote.app
+          ls -la "$APP"
+          ls -la "$APP/Watch" || echo "no watch app embedded"
+          mkdir -p out/Payload
+          cp -R "$APP" out/Payload/
+          cd out
+          zip -qry VoiceNote.ipa Payload
+          rm -rf Payload/VoiceNote.app/Watch
+          zip -qry VoiceNote-NoWatch.ipa Payload
+          rm -rf Payload
+          ls -la
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceNote-ipa
+          path: out/*.ipa
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: VoiceNote build ${{ github.run_number }}
+          body: |
+            - VoiceNote.ipa：带手表 App
+            - VoiceNote-NoWatch.ipa：只有 iPhone（签名工具装带手表的版本失败时用这个）
+          files: out/*.ipa

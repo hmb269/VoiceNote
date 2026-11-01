@@ -1,0 +1,97 @@
+name: VoiceNote
+options:
+  bundleIdPrefix: com.hmb269
+  deploymentTarget:
+    iOS: "17.0"
+    watchOS: "10.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Manual
+
+targets:
+  VoiceNote:
+    type: application
+    platform: iOS
+    sources:
+      - path: VoiceNote
+    info:
+      path: Support/VoiceNote-Info.plist
+      properties:
+        CFBundleDisplayName: 录音转写
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIBackgroundModes:
+          - audio
+        NSMicrophoneUsageDescription: 录音需要使用麦克风
+        NSSpeechRecognitionUsageDescription: 用苹果的语音识别把录音转成文字
+        LSSupportsOpeningDocumentsInPlace: false
+        UIFileSharingEnabled: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Audio
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.audio
+              - public.mpeg-4-audio
+              - com.apple.m4a-audio
+              - public.mp3
+              - com.microsoft.waveform-audio
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hmb269.voicenote
+        PRODUCT_NAME: VoiceNote
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      - target: VoiceNoteWatch
+        embed: true
+        codeSign: false
+
+  VoiceNoteWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - path: VoiceNoteWatch
+    info:
+      path: Support/VoiceNoteWatch-Info.plist
+      properties:
+        CFBundleDisplayName: 录音转写
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: com.hmb269.voicenote
+        WKBackgroundModes:
+          - audio
+        NSMicrophoneUsageDescription: 录音需要使用麦克风
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hmb269.voicenote.watchkitapp
+        PRODUCT_NAME: VoiceNoteWatch
+        TARGETED_DEVICE_FAMILY: "4"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+
+schemes:
+  VoiceNote:
+    build:
+      targets:
+        VoiceNote: all
+        VoiceNoteWatch: all
+    run:
+      config: Debug
+    archive:
+      config: Release
