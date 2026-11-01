@@ -125,28 +125,43 @@ final class Processor: ObservableObject {
             Task { @MainActor in Processor.shared.progress[id] = p }
         }
         do {
-            let text: String
+            let segs: [TranscriptSegment]
             switch engine {
             case .apple:
-                text = try await AppleTranscriber.transcribe(url: url, localeID: AppConfig.appleLocale,
+                segs = try await AppleTranscriber.transcribe(url: url, localeID: AppConfig.appleLocale,
                                                              progress: report)
             case .aliyun:
                 guard let key = Keychain.get(.aliyun) else {
                     throw VNError("还没填阿里云百炼的 API Key，到设置里填")
                 }
-                text = try await AliyunTranscriber.transcribe(url: url, apiKey: key,
+                segs = try await AliyunTranscriber.transcribe(url: url, apiKey: key,
                                                               baseURL: AppConfig.aliyunBaseURL,
                                                               model: AppConfig.aliyunModel,
                                                               language: AppConfig.aliyunLanguage,
                                                               progress: report)
             }
-            rec.transcript = text.isEmpty ? Recording.noSpeechText : text
+            rec.segments = segs
             rec.engineUsed = engine.shortLabel
             rec.status = .done
         } catch {
             rec.status = .failed
             rec.errorMessage = "转写失败：\(error.localizedDescription)"
         }
+        save()
+    }
+
+    // MARK: 校对
+
+    func updateSegment(_ rec: Recording, id: UUID, text: String) {
+        var segs = rec.segments
+        guard let i = segs.firstIndex(where: { $0.id == id }) else { return }
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty {
+            segs.remove(at: i)
+        } else {
+            segs[i].text = t
+        }
+        rec.segments = segs
         save()
     }
 

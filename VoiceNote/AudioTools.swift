@@ -1,5 +1,11 @@
 import AVFoundation
 
+struct AudioChunk {
+    let url: URL
+    let start: Double
+    let duration: Double
+}
+
 private final class EndFlag {
     var value = false
 }
@@ -13,7 +19,7 @@ enum AudioTools {
 
     /// 把任意音频转成 16kHz 单声道 16bit WAV，并按 chunkSeconds 切成多段。
     /// 返回的文件都在一个临时目录里，用完调用 cleanup 删除。
-    static func splitToWav(url: URL, chunkSeconds: Double) throws -> [URL] {
+    static func splitToWav(url: URL, chunkSeconds: Double) throws -> [AudioChunk] {
         let input = try AVAudioFile(forReading: url)
         let inFormat = input.processingFormat
         guard let outFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
@@ -45,6 +51,7 @@ enum AudioTools {
         }
 
         var urls: [URL] = []
+        var chunkFrames: [AVAudioFrameCount] = []
         var current: AVAudioFile?
         var framesInCurrent: AVAudioFrameCount = 0
         let flag = EndFlag()
@@ -57,6 +64,7 @@ enum AudioTools {
                                       commonFormat: .pcmFormatFloat32,
                                       interleaved: false)
             urls.append(u)
+            chunkFrames.append(0)
             framesInCurrent = 0
         }
 
@@ -91,6 +99,7 @@ enum AudioTools {
                 }
                 try current?.write(from: outBuf)
                 framesInCurrent += outBuf.frameLength
+                chunkFrames[chunkFrames.count - 1] += outBuf.frameLength
             }
 
             if status == .endOfStream || status == .error { break }
@@ -99,11 +108,18 @@ enum AudioTools {
         current = nil
 
         if urls.isEmpty { throw VNError("音频是空的") }
-        return urls
+        var result: [AudioChunk] = []
+        var offset: Double = 0
+        for (i, u) in urls.enumerated() {
+            let d = Double(chunkFrames[i]) / 16000
+            result.append(AudioChunk(url: u, start: offset, duration: d))
+            offset += d
+        }
+        return result
     }
 
-    static func cleanup(_ urls: [URL]) {
-        guard let dir = urls.first?.deletingLastPathComponent() else { return }
+    static func cleanup(_ chunks: [AudioChunk]) {
+        guard let dir = chunks.first?.url.deletingLastPathComponent() else { return }
         try? FileManager.default.removeItem(at: dir)
     }
 }

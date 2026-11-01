@@ -7,6 +7,40 @@ private final class OnceBox {
     var done = false
 }
 
+// MARK: - 分句工具
+
+enum SegmentTools {
+    static let strongBreaks: Set<Character> = ["。", "？", "！", "；", ".", "?", "!", ";"]
+    static let weakBreaks: Set<Character> = ["，", ","]
+
+    /// 没有逐字时间时：按标点把一段文字切成句子，时间按字数比例分配
+    static func splitEvenly(_ text: String, start: Double, duration: Double) -> [TranscriptSegment] {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return [] }
+        var sentences: [String] = []
+        var cur = ""
+        for ch in t {
+            cur.append(ch)
+            if strongBreaks.contains(ch) || ch == "\n" {
+                let s = cur.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !s.isEmpty { sentences.append(s) }
+                cur = ""
+            }
+        }
+        let rest = cur.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rest.isEmpty { sentences.append(rest) }
+        let total = max(1, sentences.reduce(0) { $0 + $1.count })
+        var segs: [TranscriptSegment] = []
+        var at = start
+        for s in sentences {
+            let d = duration * Double(s.count) / Double(total)
+            segs.append(TranscriptSegment(start: at, end: at + d, text: s))
+            at += d
+        }
+        return segs
+    }
+}
+
 // MARK: - 苹果本机转写
 
 enum AppleTranscriber {
@@ -19,17 +53,15 @@ enum AppleTranscriber {
     }
 
     static func transcribe(url: URL, localeID: String,
-                           progress: @escaping (Double) -> Void) async throws -> String {
+                           progress: @escaping (Double) -> Void) async throws -> [TranscriptSegment] {
         guard await requestAuth() else {
             throw VNError("没有语音识别权限，请到 设置 → 隐私与安全性 → 语音识别 里打开")
         }
-        let separator = (localeID.hasPrefix("zh") || localeID.hasPrefix("yue")) ? "" : " "
 
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
-            if let text = try await ModernTranscriber.transcribe(url: url, localeID: localeID,
-                                                                 separator: separator, progress: progress) {
-                return text
+            if let segs = try await ModernTranscriber.transcribe(url: url, localeID: localeID, progress: progress) {
+                return segs
             }
         }
         #endif
@@ -44,25 +76,23 @@ enum AppleTranscriber {
         let chunks = try AudioTools.splitToWav(url: url, chunkSeconds: 30)
         defer { AudioTools.cleanup(chunks) }
 
-        var parts: [String] = []
+        var all: [TranscriptSegment] = []
         for (i, chunk) in chunks.enumerated() {
             try Task.checkCancellation()
-            let text = try await recognize(chunk, with: recognizer)
-            let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !t.isEmpty { parts.append(t) }
+            all += try await recognize(chunk, with: recognizer)
             progress(Double(i + 1) / Double(chunks.count))
         }
-        return parts.joined(separator: separator)
+        return all
     }
 
-    private static func recognize(_ url: URL, with recognizer: SFSpeechRecognizer) async throws -> String {
-        let request = SFSpeechURLRecognitionRequest(url: url)
+    private static func recognize(_ chunk: AudioChunk, with recognizer: SFSpeechRecognizer) async throws -> [TranscriptSegment] {
+        let request = SFSpeechURLRecognitionRequest(url: chunk.url)
         request.shouldReportPartialResults = false
         request.addsPunctuation = true
         request.taskHint = .dictation
         // 不强制本机：苹果服务器识别更准，本机模型只在没网时兜底
         let box = OnceBox()
-        return try await withCheckedThrowingContinuation { cont in
+        let transcription: SFTranscription? = try await withCheckedThrowingContinuation { cont in
             _ = recognizer.recognitionTask(with: request) { result, error in
                 if box.done { return }
                 if let error {
@@ -70,7 +100,7 @@ enum AppleTranscriber {
                     let ns = error as NSError
                     // 1110 = 没检测到说话，当作空白
                     if ns.code == 1110 || ns.code == 203 || ns.code == 301 {
-                        cont.resume(returning: "")
+                        cont.resume(returning: nil)
                     } else {
                         cont.resume(throwing: error)
                     }
@@ -78,10 +108,52 @@ enum AppleTranscriber {
                 }
                 if let result, result.isFinal {
                     box.done = true
-                    cont.resume(returning: result.bestTranscription.formattedString)
+                    cont.resume(returning: result.bestTranscription)
                 }
             }
         }
+        guard let transcription else { return [] }
+        return sentences(from: transcription, offset: chunk.start, chunkDuration: chunk.duration)
+    }
+
+    /// 用逐词时间把识别结果切成句子
+    private static func sentences(from tr: SFTranscription, offset: Double, chunkDuration: Double) -> [TranscriptSegment] {
+        let formatted = tr.formattedString as NSString
+        let words = tr.segments
+        guard !words.isEmpty, formatted.length > 0 else {
+            return SegmentTools.splitEvenly(tr.formattedString, start: offset, duration: chunkDuration)
+        }
+        var out: [TranscriptSegment] = []
+        var sStart: Double?
+        var textStart = 0
+        for (i, w) in words.enumerated() {
+            if sStart == nil {
+                sStart = w.timestamp
+                textStart = w.substringRange.location
+            }
+            var endLoc = w.substringRange.location + w.substringRange.length
+            var strong = false
+            var weak = false
+            while endLoc < formatted.length {
+                let ch = Character(formatted.substring(with: NSRange(location: endLoc, length: 1)))
+                if SegmentTools.strongBreaks.contains(ch) { strong = true; endLoc += 1 }
+                else if SegmentTools.weakBreaks.contains(ch) { weak = true; endLoc += 1 }
+                else { break }
+            }
+            let wEnd = w.timestamp + w.duration
+            let longEnough = wEnd - (sStart ?? 0) > 6
+            if strong || (weak && longEnough) || i == words.count - 1 {
+                let len = max(0, min(endLoc, formatted.length) - textStart)
+                let text = formatted.substring(with: NSRange(location: textStart, length: len))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    out.append(TranscriptSegment(start: offset + (sStart ?? 0), end: offset + wEnd, text: text))
+                }
+                sStart = nil
+                textStart = endLoc
+            }
+        }
+        return out
     }
 }
 
@@ -91,8 +163,8 @@ enum AppleTranscriber {
 @available(iOS 26.0, *)
 enum ModernTranscriber {
     /// 返回 nil 表示这个语言新引擎不支持，交给旧引擎
-    static func transcribe(url: URL, localeID: String, separator: String,
-                           progress: @escaping (Double) -> Void) async throws -> String? {
+    static func transcribe(url: URL, localeID: String,
+                           progress: @escaping (Double) -> Void) async throws -> [TranscriptSegment]? {
         guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: localeID)) else {
             return nil
         }
@@ -112,16 +184,19 @@ enum ModernTranscriber {
         let total = max(1, Double(file.length) / file.processingFormat.sampleRate)
         let analyzer = SpeechAnalyzer(modules: [transcriber])
 
-        let collector = Task { () -> [String] in
-            var parts: [String] = []
+        let collector = Task { () -> [TranscriptSegment] in
+            var segs: [TranscriptSegment] = []
             for try await result in transcriber.results {
                 guard result.isFinal else { continue }
                 let t = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !t.isEmpty { parts.append(t) }
-                let end = result.range.end.seconds
-                if end.isFinite { progress(min(0.99, end / total)) }
+                let s = result.range.start.seconds
+                let e = result.range.end.seconds
+                guard !t.isEmpty, s.isFinite, e.isFinite else { continue }
+                // 一个结果可能很长，按句号再切细，时间按字数分
+                segs += SegmentTools.splitEvenly(t, start: s, duration: max(0.1, e - s))
+                progress(min(0.99, e / total))
             }
-            return parts
+            return segs
         }
 
         if let last = try await analyzer.analyzeSequence(from: file) {
@@ -129,9 +204,9 @@ enum ModernTranscriber {
         } else {
             await analyzer.cancelAndFinishNow()
         }
-        let parts = try await collector.value
+        let segs = try await collector.value
         progress(1)
-        return parts.joined(separator: separator)
+        return segs
     }
 }
 #endif
@@ -141,15 +216,15 @@ enum ModernTranscriber {
 enum AliyunTranscriber {
     static func transcribe(url: URL, apiKey: String, baseURL: String, model: String,
                            language: String,
-                           progress: @escaping (Double) -> Void) async throws -> String {
-        // 每段 2 分钟的 16k WAV 约 3.8MB，base64 后约 5MB，在 10MB 限制内
-        let chunks = try AudioTools.splitToWav(url: url, chunkSeconds: 120)
+                           progress: @escaping (Double) -> Void) async throws -> [TranscriptSegment] {
+        // 每 30 秒一段，方便点句子定位；计费按时长，分段不会多花钱
+        let chunks = try AudioTools.splitToWav(url: url, chunkSeconds: 30)
         defer { AudioTools.cleanup(chunks) }
 
-        var parts: [String] = []
+        var all: [TranscriptSegment] = []
         for (i, chunk) in chunks.enumerated() {
             try Task.checkCancellation()
-            let data = try Data(contentsOf: chunk)
+            let data = try Data(contentsOf: chunk.url)
             let dataURI = "data:audio/wav;base64," + data.base64EncodedString()
             var asrOptions: [String: Any] = ["enable_itn": true]
             if language != "auto" { asrOptions["language"] = language }
@@ -165,12 +240,11 @@ enum AliyunTranscriber {
                 "stream": false,
                 "asr_options": asrOptions,
             ]
-            let text = try await OpenAIClient.chat(baseURL: baseURL, apiKey: apiKey, body: body, timeout: 180)
-            let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !t.isEmpty { parts.append(t) }
+            let text = try await OpenAIClient.chat(baseURL: baseURL, apiKey: apiKey, body: body, timeout: 120)
+            all += SegmentTools.splitEvenly(text, start: chunk.start, duration: chunk.duration)
             progress(Double(i + 1) / Double(chunks.count))
         }
-        return parts.joined(separator: "\n")
+        return all
     }
 }
 

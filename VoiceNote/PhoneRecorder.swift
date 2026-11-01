@@ -85,6 +85,7 @@ final class AudioPlayerModel: ObservableObject {
     func toggle() {
         guard let p = player else { return }
         if p.isPlaying {
+            stopAt = nil
             p.pause()
             isPlaying = false
             timer?.invalidate()
@@ -96,15 +97,30 @@ final class AudioPlayerModel: ObservableObject {
             p.play()
             isPlaying = true
             timer?.invalidate()
-            timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.update() }
             }
         }
     }
 
+    /// 校对用：stopAt 不为空时播到这个时间就停
+    private var stopAt: Double?
+
+    func play(from start: Double, until end: Double?) {
+        guard let p = player else { return }
+        stopAt = end
+        // 往前留一点，避免句首被吃掉
+        seek(max(0, start - 0.15))
+        if !p.isPlaying { toggle() }
+    }
+
     private func update() {
         guard let p = player else { return }
         current = p.currentTime
+        if let s = stopAt, current >= s {
+            stopAt = nil
+            p.pause()
+        }
         if !p.isPlaying {
             isPlaying = false
             timer?.invalidate()

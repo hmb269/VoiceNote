@@ -39,6 +39,7 @@ final class Recording {
     var errorMessage: String
     var engineUsed: String
     var autoPending: Bool
+    var segmentsData: Data? = nil
 
     init(title: String, createdAt: Date, duration: Double, fileName: String, source: RecordingSource) {
         self.id = UUID()
@@ -58,6 +59,20 @@ final class Recording {
     var status: RecordingStatus {
         get { RecordingStatus(rawValue: statusRaw) ?? .idle }
         set { statusRaw = newValue.rawValue }
+    }
+
+    /// 带时间的分句。写入时同时更新 transcript
+    var segments: [TranscriptSegment] {
+        get {
+            guard let segmentsData,
+                  let s = try? JSONDecoder().decode([TranscriptSegment].self, from: segmentsData) else { return [] }
+            return s
+        }
+        set {
+            segmentsData = try? JSONEncoder().encode(newValue)
+            let text = newValue.map(\.text).joined(separator: "\n")
+            transcript = text.isEmpty ? Recording.noSpeechText : text
+        }
     }
 
     var source: RecordingSource {
@@ -80,6 +95,15 @@ final class Recording {
         f.dateFormat = "M月d日 HH:mm"
         return "\(source.label) \(f.string(from: date))"
     }
+}
+
+struct TranscriptSegment: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var start: Double
+    var end: Double
+    var text: String
+
+    func contains(_ t: Double) -> Bool { t >= start && t < end }
 }
 
 enum Storage {

@@ -10,14 +10,24 @@ struct RecordingDetailView: View {
     @State private var renaming = false
     @State private var newTitle = ""
     @State private var copied = false
+    @State private var editing: TranscriptSegment?
+    @State private var editText = ""
+    @AppStorage("playSingleSentence") private var singleSentence = true
 
     private var isBusy: Bool { processor.busy.contains(rec.id) }
 
+    private var segments: [TranscriptSegment] { rec.segments }
+
+    private var currentSegmentID: UUID? {
+        guard player.isPlaying || player.current > 0 else { return nil }
+        return segments.first(where: { $0.contains(player.current) })?.id
+    }
+
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
-                PlayerView(player: player)
                 statusView
                 actions
                 Picker("内容", selection: $tab) {
@@ -28,6 +38,52 @@ struct RecordingDetailView: View {
                 content
             }
             .padding()
+        }
+        .onChange(of: currentSegmentID) { _, id in
+            guard let id, player.isPlaying, tab == 1 else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
+        }
+        .safeAreaInset(edge: .bottom) {
+            PlayerView(player: player)
+                .padding(.horizontal)
+                .padding(.bottom, 4)
+                .background(.bar)
+        }
+        .sheet(item: $editing) { seg in
+            NavigationStack {
+                VStack(alignment: .leading, spacing: 12) {
+                    Button {
+                        player.play(from: seg.start, until: seg.end)
+                    } label: {
+                        Label("听这句 \(formatDuration(seg.start))", systemImage: "play.circle")
+                    }
+                    TextEditor(text: $editText)
+                        .font(.body)
+                        .padding(8)
+                        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+                    Text("清空后保存会删掉这一句。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .navigationTitle("校对这句")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") { editing = nil }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("保存") {
+                            processor.updateSegment(rec, id: seg.id, text: editText)
+                            editing = nil
+                        }
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
         }
         .navigationTitle("录音详情")
         .navigationBarTitleDisplayMode(.inline)
@@ -159,10 +215,60 @@ struct RecordingDetailView: View {
             if rec.transcript.isEmpty {
                 Text("还没转写，点上面的「转写」。")
                     .foregroundStyle(.secondary)
+            } else if !segments.isEmpty {
+                segmentList
             } else {
                 Text(rec.transcript)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var segmentList: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Toggle(isOn: $singleSentence) {
+                    Text("点一句只播这一句").font(.footnote)
+                }
+                .toggleStyle(.switch)
+            }
+            .padding(.bottom, 6)
+            Text("点句子播放，长按可以改字")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 6)
+            ForEach(segments) { seg in
+                let active = seg.id == currentSegmentID
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(formatDuration(seg.start))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(active ? Color.accentColor : Color.secondary)
+                        .frame(width: 44, alignment: .leading)
+                    Text(seg.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.vertical, 6)
+                .padding(.horizontal, 6)
+                .background(active ? Color.accentColor.opacity(0.15) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 8))
+                .contentShape(Rectangle())
+                .id(seg.id)
+                .onTapGesture {
+                    player.play(from: seg.start, until: singleSentence ? seg.end : nil)
+                }
+                .contextMenu {
+                    Button {
+                        player.play(from: seg.start, until: seg.end)
+                    } label: { Label("只播这一句", systemImage: "play") }
+                    Button {
+                        player.play(from: seg.start, until: nil)
+                    } label: { Label("从这里往下播", systemImage: "play.square.stack") }
+                    Button {
+                        editText = seg.text
+                        editing = seg
+                    } label: { Label("改字", systemImage: "pencil") }
+                }
             }
         }
     }
