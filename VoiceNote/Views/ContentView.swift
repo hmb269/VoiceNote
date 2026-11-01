@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
+import UIKit
 
 struct ContentView: View {
     @Environment(\.modelContext) private var context
@@ -11,6 +12,7 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var alertText: String?
     @State private var search = ""
+    @State private var path: [Recording] = []
 
     private var filtered: [Recording] {
         let q = search.trimmingCharacters(in: .whitespaces)
@@ -22,25 +24,43 @@ struct ContentView: View {
         }
     }
 
+    private var grouped: [(key: Date, items: [Recording])] {
+        let cal = Calendar.current
+        let dict = Dictionary(grouping: filtered) { cal.startOfDay(for: $0.createdAt) }
+        return dict.keys.sorted(by: >).map { (key: $0, items: dict[$0] ?? []) }
+    }
+
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if recordings.isEmpty {
-                    ContentUnavailableView {
-                        Label("还没有录音", systemImage: "waveform")
-                    } description: {
-                        Text("点下面的红色按钮开始录；右上角可以导入音频文件；手表上录的会自动同步过来。")
-                    }
+                    emptyState
                 } else {
                     List {
-                        ForEach(filtered) { rec in
-                            NavigationLink(value: rec) {
-                                RecordingRow(rec: rec)
+                        ForEach(grouped, id: \.key) { group in
+                            Section {
+                                ForEach(group.items) { rec in
+                                    NavigationLink(value: rec) {
+                                        RecordingRow(rec: rec)
+                                    }
+                                    .listRowInsets(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14))
+                                }
+                                .onDelete { offsets in
+                                    delete(offsets.map { group.items[$0] })
+                                }
+                            } header: {
+                                Text(dayTitle(group.key))
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .textCase(nil)
                             }
                         }
-                        .onDelete(perform: delete)
+                        Color.clear.frame(height: 90)
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
                     }
-                    .listStyle(.plain)
+                    .listStyle(.insetGrouped)
+                    .listSectionSpacing(14)
                     .searchable(text: $search, prompt: "搜索标题和文字")
                 }
             }
@@ -58,8 +78,10 @@ struct ContentView: View {
                         .accessibilityLabel("导入音频")
                 }
             }
-            .safeAreaInset(edge: .bottom) {
+            .overlay(alignment: .bottom) {
                 RecordBar(recorder: recorder) { alertText = $0 }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
             }
             .fileImporter(isPresented: $showImporter,
                           allowedContentTypes: [.audio],
@@ -87,10 +109,45 @@ struct ContentView: View {
                 Text(alertText ?? "")
             }
         }
+        .tint(Theme.accent)
     }
 
-    private func delete(at offsets: IndexSet) {
-        let items = offsets.map { filtered[$0] }
+    private var emptyState: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle()
+                    .fill(Theme.accent.opacity(0.10))
+                    .frame(width: 120, height: 120)
+                Image(systemName: "waveform")
+                    .font(.system(size: 46, weight: .medium))
+                    .foregroundStyle(Theme.recordGradient)
+            }
+            Text("开始你的第一段录音")
+                .font(.system(.title3, design: .rounded).weight(.bold))
+            VStack(spacing: 6) {
+                Label("点下方按钮录音，锁屏也能继续", systemImage: "mic")
+                Label("手表上录的会自动同步过来", systemImage: "applewatch")
+                Label("右上角导入，或从语音备忘录分享", systemImage: "square.and.arrow.down")
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.bottom, 120)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground))
+    }
+
+    private func dayTitle(_ d: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(d) { return "今天" }
+        if cal.isDateInYesterday(d) { return "昨天" }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = cal.isDate(d, equalTo: Date(), toGranularity: .year) ? "M月d日 EEEE" : "yyyy年M月d日"
+        return f.string(from: d)
+    }
+
+    private func delete(_ items: [Recording]) {
         for rec in items {
             try? FileManager.default.removeItem(at: rec.fileURL)
             context.delete(rec)
@@ -104,33 +161,66 @@ struct RecordingRow: View {
     @ObservedObject private var processor = Processor.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(rec.title)
-                .font(.headline)
-                .lineLimit(1)
-            HStack(spacing: 6) {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(iconTint.opacity(0.14))
+                    .frame(width: 42, height: 42)
                 Image(systemName: rec.source.icon)
-                Text(rec.createdAt, format: .dateTime.month().day().hour().minute())
-                Text("·")
-                Text(formatDuration(rec.duration))
-                Spacer()
-                statusBadge
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(iconTint)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            if !rec.summary.isEmpty || rec.hasSpeech {
-                Text(previewText)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(rec.title)
+                        .font(.system(.body, design: .rounded).weight(.semibold))
+                        .lineLimit(1)
+                    Spacer(minLength: 6)
+                    Text(rec.createdAt, format: .dateTime.hour().minute())
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                if !previewText.isEmpty {
+                    Text(previewText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                HStack(spacing: 6) {
+                    Text(formatDuration(rec.duration))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    statusBadge
+                }
             }
         }
-        .padding(.vertical, 4)
     }
 
+    private var iconTint: Color {
+        switch rec.source {
+        case .phone: return Theme.accent
+        case .watch: return Color(red: 0.20, green: 0.55, blue: 0.95)
+        case .imported: return Color(red: 0.95, green: 0.60, blue: 0.15)
+        }
+    }
+
+    /// 优先显示摘要，没有就显示原文开头
     private var previewText: String {
-        let src = rec.summary.isEmpty ? rec.transcript : OrganizedParser.stripMarkers(rec.summary)
-        return src.components(separatedBy: "\n")
+        let source: String
+        if !rec.summary.isEmpty {
+            let clean = OrganizedParser.stripMarkers(rec.summary)
+            let lines = clean.components(separatedBy: "\n")
+            if let i = lines.firstIndex(where: { $0.contains("摘要") && $0.hasPrefix("#") }) {
+                source = lines[(i + 1)...].prefix { !$0.hasPrefix("#") }.joined(separator: " ")
+            } else {
+                source = clean
+            }
+        } else if rec.hasSpeech {
+            source = rec.transcript
+        } else {
+            return ""
+        }
+        return source.components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !$0.hasPrefix("#") }
             .joined(separator: " ")
@@ -140,16 +230,16 @@ struct RecordingRow: View {
         switch rec.status {
         case .transcribing:
             let p = processor.progress[rec.id] ?? 0
-            Text("转写中 \(Int(p * 100))%").foregroundStyle(.orange)
+            Chip(icon: "waveform", text: "转写中 \(Int(p * 100))%", tint: .orange)
         case .organizing:
-            Text("整理中…").foregroundStyle(.purple)
+            Chip(icon: "sparkles", text: "整理中", tint: Theme.ai)
         case .failed:
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            Chip(icon: "exclamationmark.triangle.fill", text: "失败", tint: .red)
         case .done:
             if !rec.summary.isEmpty {
-                Image(systemName: "sparkles").foregroundStyle(.purple)
-            } else {
-                Image(systemName: "text.alignleft")
+                Chip(icon: "sparkles", text: "已整理", tint: Theme.ai)
+            } else if rec.hasSpeech {
+                Chip(icon: "text.alignleft", text: "已转写", tint: .secondary)
             }
         case .idle:
             EmptyView()
@@ -162,40 +252,56 @@ struct RecordBar: View {
     var onError: (String) -> Void
 
     var body: some View {
-        VStack(spacing: 10) {
+        Group {
             if recorder.isRecording {
-                Text(formatDuration(recorder.elapsed))
-                    .font(.title2.monospacedDigit().weight(.semibold))
-                LevelBar(level: recorder.level)
-                    .frame(height: 6)
-                    .padding(.horizontal, 60)
-            }
-            Button(action: toggle) {
-                ZStack {
-                    Circle()
-                        .strokeBorder(.secondary.opacity(0.4), lineWidth: 3)
-                        .frame(width: 76, height: 76)
-                    if recorder.isRecording {
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(.red)
-                            .frame(width: 30, height: 30)
-                    } else {
-                        Circle()
-                            .fill(.red)
-                            .frame(width: 62, height: 62)
+                HStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Circle().fill(Theme.accent).frame(width: 8, height: 8)
+                            Text("录音中").font(.caption.weight(.semibold)).foregroundStyle(Theme.accent)
+                        }
+                        Text(formatDuration(recorder.elapsed))
+                            .font(.system(.title2, design: .rounded).weight(.semibold).monospacedDigit())
                     }
+                    LiveLevels(levels: Array(recorder.levels.suffix(22)))
+                        .frame(maxWidth: .infinity)
+                    Button(action: toggle) {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(.white)
+                            .frame(width: 20, height: 20)
+                            .frame(width: 56, height: 56)
+                            .background(Theme.recordGradient, in: Circle())
+                            .shadow(color: Theme.accent.opacity(0.4), radius: 10, y: 4)
+                    }
+                    .accessibilityLabel("停止录音")
                 }
+                .padding(.leading, 20)
+                .padding(.trailing, 10)
+                .padding(.vertical, 10)
+                .glassBackground(cornerRadius: 38)
+                .transition(.scale(scale: 0.9).combined(with: .opacity))
+            } else {
+                Button(action: toggle) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "mic.fill")
+                        Text("开始录音")
+                    }
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 28)
+                    .frame(height: 56)
+                    .background(Theme.recordGradient, in: Capsule())
+                    .shadow(color: Theme.accent.opacity(0.35), radius: 14, y: 6)
+                }
+                .buttonStyle(.plain)
+                .transition(.scale(scale: 0.9).combined(with: .opacity))
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(recorder.isRecording ? "停止录音" : "开始录音")
         }
-        .padding(.top, 10)
-        .padding(.bottom, 6)
-        .frame(maxWidth: .infinity)
-        .background(.bar)
+        .animation(.spring(duration: 0.35), value: recorder.isRecording)
     }
 
     private func toggle() {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         if recorder.isRecording {
             if let r = recorder.stop() {
                 Processor.shared.ingest(fileName: r.fileName, source: .phone, createdAt: r.startedAt)
@@ -203,20 +309,6 @@ struct RecordBar: View {
         } else {
             Task {
                 do { try await recorder.start() } catch { onError(error.localizedDescription) }
-            }
-        }
-    }
-}
-
-struct LevelBar: View {
-    let level: Float
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(.secondary.opacity(0.2))
-                Capsule().fill(.red)
-                    .frame(width: geo.size.width * CGFloat(level))
-                    .animation(.linear(duration: 0.1), value: level)
             }
         }
     }

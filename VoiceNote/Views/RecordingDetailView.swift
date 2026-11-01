@@ -6,10 +6,12 @@ struct RecordingDetailView: View {
     @Bindable var rec: Recording
     @ObservedObject private var processor = Processor.shared
     @StateObject private var player = AudioPlayerModel()
+    @Namespace private var tabNS
+
     @State private var tab = 0
     @State private var renaming = false
     @State private var newTitle = ""
-    @State private var copied = false
+    @State private var toast: String?
     @State private var editing: TranscriptSegment?
     @State private var editText = ""
     @AppStorage("playSingleSentence") private var singleSentence = true
@@ -17,128 +19,60 @@ struct RecordingDetailView: View {
     @State private var exporting = false
     @State private var exportError: String?
 
+    // 缓存：播放时每 0.1 秒刷新界面，不要每次都重新解析
+    @State private var segs: [TranscriptSegment] = []
+    @State private var lines: [OrganizedLine] = []
+    @State private var waveform: [Float] = []
+
     private var isBusy: Bool { processor.busy.contains(rec.id) }
 
-    private var segments: [TranscriptSegment] { rec.segments }
-
-    private var organizedLines: [OrganizedLine] {
-        OrganizedParser.parse(rec.summary, segments: segments)
-    }
-
-    private var currentLineID: Int? { activeLineID(in: organizedLines) }
-
-    private func activeLineID(in lines: [OrganizedLine]) -> Int? {
+    private var activeLineID: Int? {
         guard player.isPlaying || player.current > 0 else { return nil }
         let t = player.current
-        // 取开始时间最晚、且包含当前时间的那行
         return lines
-            .filter { line in
-                guard let s = line.start, let e = line.end else { return false }
+            .filter { l in
+                guard let s = l.start, let e = l.end else { return false }
                 return t >= s && t < e
             }
             .max(by: { ($0.start ?? 0) < ($1.start ?? 0) })?.id
     }
 
-    private var currentSegmentID: UUID? { activeSegmentID(in: segments) }
-
-    private func activeSegmentID(in segs: [TranscriptSegment]) -> UUID? {
+    private var activeSegmentID: UUID? {
         guard player.isPlaying || player.current > 0 else { return nil }
         return segs.first(where: { $0.contains(player.current) })?.id
     }
 
     var body: some View {
         ScrollViewReader { proxy in
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                statusView
-                actions
-                Picker("内容", selection: $tab) {
-                    Text("整理").tag(0)
-                    Text("原文").tag(1)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    header
+                    statusCard
+                    actions
+                    tabSwitcher
+                    content
                 }
-                .pickerStyle(.segmented)
-                content
+                .padding(.horizontal, 18)
+                .padding(.top, 8)
+                .padding(.bottom, 24)
             }
-            .padding()
-        }
-        .onChange(of: currentSegmentID) { _, id in
-            guard let id, player.isPlaying, tab == 1 else { return }
-            withAnimation(.easeInOut(duration: 0.25)) {
-                proxy.scrollTo(id, anchor: .center)
+            .background(Color(.systemGroupedBackground))
+            .onChange(of: activeSegmentID) { _, id in
+                guard let id, player.isPlaying, tab == 1 else { return }
+                withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(id, anchor: .center) }
             }
-        }
-        .onChange(of: currentLineID) { _, id in
-            guard let id, player.isPlaying, tab == 0 else { return }
-            withAnimation(.easeInOut(duration: 0.25)) {
-                proxy.scrollTo("line-\(id)", anchor: .center)
+            .onChange(of: activeLineID) { _, id in
+                guard let id, player.isPlaying, tab == 0 else { return }
+                withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo("line-\(id)", anchor: .center) }
             }
-        }
         }
         .safeAreaInset(edge: .bottom) {
-            PlayerView(player: player)
-                .padding(.horizontal)
-                .padding(.bottom, 4)
-                .background(.bar)
+            PlayerPanel(player: player, waveform: waveform, singleSentence: $singleSentence)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 2)
         }
-        .sheet(item: $editing) { seg in
-            NavigationStack {
-                VStack(alignment: .leading, spacing: 12) {
-                    Button {
-                        player.play(from: seg.start, until: seg.end)
-                    } label: {
-                        Label("听这句 \(formatDuration(seg.start))", systemImage: "play.circle")
-                    }
-                    TextEditor(text: $editText)
-                        .font(.body)
-                        .padding(8)
-                        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
-                    Text("清空后保存会删掉这一句。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                .padding()
-                .navigationTitle("校对这句")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("取消") { editing = nil }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("保存") {
-                            processor.updateSegment(rec, id: seg.id, text: editText)
-                            editing = nil
-                        }
-                    }
-                }
-            }
-            .presentationDetents([.medium, .large])
-        }
-        .navigationTitle("录音详情")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button { UIPasteboard.general.string = exportText; copied = true } label: {
-                        Label("复制全部文字", systemImage: "doc.on.doc")
-                    }
-                    ShareLink(item: exportText) {
-                        Label("分享文字", systemImage: "text.quote")
-                    }
-                    ShareLink(item: rec.fileURL) {
-                        Label("分享录音文件", systemImage: "waveform")
-                    }
-                    Button {
-                        newTitle = rec.title
-                        renaming = true
-                    } label: {
-                        Label("改标题", systemImage: "pencil")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-            }
-        }
+        .toolbar { toolbarMenu }
         .alert("改标题", isPresented: $renaming) {
             TextField("标题", text: $newTitle)
             Button("取消", role: .cancel) {}
@@ -147,15 +81,30 @@ struct RecordingDetailView: View {
                 if !t.isEmpty { rec.title = t }
             }
         }
+        .sheet(item: $editing) { seg in editSheet(seg) }
         .sheet(item: $shareItem) { item in
             ActivityView(items: item.items)
                 .presentationDetents([.medium, .large])
         }
         .overlay {
             if exporting {
-                ProgressView("正在剪切录音…")
-                    .padding(20)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text("正在剪切录音…").font(.subheadline)
+                }
+                .padding(24)
+                .glassBackground(cornerRadius: 20)
+            }
+        }
+        .overlay(alignment: .top) {
+            if let toast {
+                Label(toast, systemImage: "checkmark.circle.fill")
+                    .font(.subheadline.weight(.medium))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .glassBackground(cornerRadius: 22)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(.top, 4)
             }
         }
         .alert("出错了", isPresented: Binding(
@@ -166,62 +115,113 @@ struct RecordingDetailView: View {
         } message: {
             Text(exportError ?? "")
         }
-        .alert("已复制", isPresented: $copied) {
-            Button("好", role: .cancel) {}
-        }
         .onAppear {
             player.load(rec.fileURL)
+            refresh()
             if rec.summary.isEmpty { tab = 1 }
+        }
+        .task(id: rec.fileName) {
+            if let c = WaveformLoader.cached(rec.fileURL) {
+                waveform = c
+            } else {
+                let w = await WaveformLoader.load(url: rec.fileURL, count: 72)
+                WaveformLoader.store(rec.fileURL, w)
+                withAnimation(.easeOut(duration: 0.3)) { waveform = w }
+            }
         }
         .onDisappear { player.stop() }
         .onChange(of: rec.summary) { _, newValue in
-            if !newValue.isEmpty { tab = 0 }
+            refresh()
+            if !newValue.isEmpty { withAnimation(.snappy) { tab = 0 } }
+        }
+        .onChange(of: rec.segmentsData) { _, _ in refresh() }
+    }
+
+    private func refresh() {
+        segs = rec.segments
+        lines = OrganizedParser.parse(rec.summary, segments: segs)
+    }
+
+    private func showToast(_ text: String) {
+        withAnimation(.spring(duration: 0.35)) { toast = text }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            withAnimation(.easeOut(duration: 0.25)) { toast = nil }
         }
     }
 
+    private func copy(_ text: String) {
+        UIPasteboard.general.string = text
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        showToast("已复制")
+    }
+
+    // MARK: 头部
+
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(rec.title)
-                .font(.title2.bold())
+                .font(.system(.title2, design: .rounded).weight(.bold))
+                .fixedSize(horizontal: false, vertical: true)
                 .onTapGesture {
                     newTitle = rec.title
                     renaming = true
                 }
-            HStack(spacing: 6) {
-                Image(systemName: rec.source.icon)
-                Text(rec.createdAt, format: .dateTime.year().month().day().hour().minute())
-                Text("·")
-                Text(formatDuration(rec.duration))
+            Text(rec.createdAt, format: .dateTime.year().month().day().weekday().hour().minute())
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Chip(icon: rec.source.icon, text: rec.source.label)
+                Chip(icon: "clock", text: formatDuration(rec.duration))
                 if !rec.engineUsed.isEmpty {
-                    Text("·")
-                    Text(rec.engineUsed)
+                    Chip(icon: "waveform", text: rec.engineUsed)
                 }
             }
-            .font(.footnote)
-            .foregroundStyle(.secondary)
         }
     }
 
-    @ViewBuilder private var statusView: some View {
+    @ViewBuilder private var statusCard: some View {
         if rec.status == .transcribing {
             let p = processor.progress[rec.id] ?? 0
-            VStack(alignment: .leading, spacing: 4) {
-                ProgressView(value: p)
-                Text("正在转写 \(Int(p * 100))%，可以先去做别的")
-                    .font(.footnote)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("正在转写", systemImage: "waveform.badge.magnifyingglass")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text("\(Int(p * 100))%")
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                ProgressView(value: p).tint(Theme.accent)
+                Text("可以先去做别的，转完会自动保存")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            .padding(16)
+            .cardBackground()
         } else if rec.status == .organizing {
-            HStack(spacing: 8) {
-                ProgressView()
-                Text("AI 正在整理…").font(.footnote).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                ProgressView().tint(Theme.ai)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("AI 正在整理").font(.subheadline.weight(.semibold))
+                    Text("长录音要一两分钟").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
             }
+            .padding(16)
+            .cardBackground()
         }
         if !rec.errorMessage.isEmpty {
-            Text(rec.errorMessage)
-                .font(.footnote)
-                .foregroundStyle(.red)
-                .textSelection(.enabled)
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text(rec.errorMessage)
+                    .font(.footnote)
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+            }
+            .padding(14)
+            .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
 
@@ -234,154 +234,241 @@ struct RecordingDetailView: View {
                     }
                 }
             } label: {
-                Label(rec.transcript.isEmpty ? "转写" : "重新转写", systemImage: "text.bubble")
-                    .frame(maxWidth: .infinity)
+                HStack(spacing: 8) {
+                    Image(systemName: "text.bubble.fill")
+                    Text(rec.transcript.isEmpty ? "转写" : "重新转写")
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color(.systemBackground))
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .background(Color.primary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
-            .buttonStyle(.borderedProminent)
 
             Button {
                 processor.requestOrganize(rec)
             } label: {
-                Label(rec.summary.isEmpty ? "AI 整理" : "重新整理", systemImage: "sparkles")
-                    .frame(maxWidth: .infinity)
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                    Text(rec.summary.isEmpty ? "AI 整理" : "重新整理")
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .background(Theme.aiGradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .opacity(rec.hasSpeech ? 1 : 0.4)
             }
-            .buttonStyle(.bordered)
             .disabled(!rec.hasSpeech)
         }
         .disabled(isBusy)
+        .opacity(isBusy ? 0.5 : 1)
+    }
+
+    private var tabSwitcher: some View {
+        HStack(spacing: 0) {
+            ForEach([0, 1], id: \.self) { i in
+                Button {
+                    withAnimation(.snappy(duration: 0.3)) { tab = i }
+                } label: {
+                    Label(i == 0 ? "整理" : "原文", systemImage: i == 0 ? "sparkles" : "text.alignleft")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(tab == i ? Color.primary : Color.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background {
+                            if tab == i {
+                                Capsule()
+                                    .fill(Color(.systemBackground))
+                                    .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+                                    .matchedGeometryEffect(id: "tab", in: tabNS)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(Color(.tertiarySystemFill), in: Capsule())
     }
 
     @ViewBuilder private var content: some View {
         if tab == 0 {
             if rec.summary.isEmpty {
-                Text(rec.hasSpeech ? "还没整理，点上面的「AI 整理」。" : "先转写，再整理。")
-                    .foregroundStyle(.secondary)
+                EmptyHint(icon: "sparkles",
+                          title: "还没整理",
+                          text: rec.hasSpeech ? "点上面的「AI 整理」，生成摘要、要点和待办" : "先转写，再让 AI 整理")
             } else {
-                organizedList
+                organizedView
             }
         } else {
             if rec.transcript.isEmpty {
-                Text("还没转写，点上面的「转写」。")
-                    .foregroundStyle(.secondary)
-            } else if !segments.isEmpty {
-                segmentList
+                EmptyHint(icon: "text.bubble", title: "还没转写", text: "点上面的「转写」，选本机或阿里云")
+            } else if !segs.isEmpty {
+                transcriptView
             } else {
                 Text(rec.transcript)
+                    .lineSpacing(5)
                     .textSelection(.enabled)
+                    .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .cardBackground()
             }
         }
     }
 
-    private var segmentList: some View {
-        let segs = segments
-        let activeID = activeSegmentID(in: segs)
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Toggle(isOn: $singleSentence) {
-                    Text("点一句只播这一句").font(.footnote)
-                }
-                .toggleStyle(.switch)
+    // MARK: 整理
+
+    private var organizedView: some View {
+        let sections = OrgSection.build(from: lines)
+        let activeID = activeLineID
+        let hasTime = lines.contains { $0.hasTime }
+        return VStack(alignment: .leading, spacing: 16) {
+            if hasTime {
+                TipLine(text: "点段落播放对应录音 · 长按复制或分享这段录音")
+            } else if !segs.isEmpty {
+                TipLine(text: "点「重新整理」后，每一段都能点着播放")
             }
-            .padding(.bottom, 6)
-            Text("点句子播放，长按可以改字")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 6)
+            ForEach(sections) { section in
+                VStack(alignment: .leading, spacing: 12) {
+                    if !section.title.isEmpty {
+                        Label(section.title, systemImage: section.icon)
+                            .font(.footnote.weight(.bold))
+                            .foregroundStyle(Theme.ai)
+                            .textCase(nil)
+                    }
+                    ForEach(section.lines) { line in
+                        OrgLineView(line: line, active: line.id == activeID)
+                            .id("line-\(line.id)")
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if let s = line.start, let e = line.end {
+                                    player.play(from: s, until: singleSentence ? e : nil)
+                                }
+                            }
+                            .contextMenu { lineMenu(line) }
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .cardBackground()
+            }
+        }
+    }
+
+    @ViewBuilder private func lineMenu(_ line: OrganizedLine) -> some View {
+        let text = OrgLineView.plain(line.text)
+        Button { copy(text) } label: { Label("复制这段", systemImage: "doc.on.doc") }
+        if let s = line.start, let e = line.end {
+            Button { player.play(from: s, until: e) } label: { Label("只播这一段", systemImage: "play") }
+            Button { player.play(from: s, until: nil) } label: { Label("从这里往下播", systemImage: "play.square.stack") }
+            Button { shareClip(start: s, end: e) } label: { Label("分享这段录音", systemImage: "square.and.arrow.up") }
+        }
+    }
+
+    // MARK: 原文
+
+    private var transcriptView: some View {
+        let activeID = activeSegmentID
+        return VStack(alignment: .leading, spacing: 4) {
+            TipLine(text: "点一句播放 · 长按复制、改字或分享这句录音")
+                .padding(.bottom, 8)
             ForEach(segs) { seg in
                 let active = seg.id == activeID
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Text(formatDuration(seg.start))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(active ? Color.accentColor : Color.secondary)
-                        .frame(width: 44, alignment: .leading)
+                        .font(.caption.monospacedDigit().weight(.medium))
+                        .foregroundStyle(active ? Theme.accent : Color.secondary)
+                        .frame(width: 42, alignment: .leading)
                     Text(seg.text)
+                        .lineSpacing(4)
+                        .foregroundStyle(active ? Color.primary : Color.primary.opacity(0.88))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.vertical, 6)
-                .padding(.horizontal, 6)
-                .background(active ? Color.accentColor.opacity(0.15) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 8))
+                .padding(.vertical, 9)
+                .padding(.horizontal, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(active ? Theme.accent.opacity(0.10) : Color.clear)
+                )
                 .contentShape(Rectangle())
                 .id(seg.id)
                 .onTapGesture {
                     player.play(from: seg.start, until: singleSentence ? seg.end : nil)
                 }
                 .contextMenu {
-                    Button {
-                        player.play(from: seg.start, until: seg.end)
-                    } label: { Label("只播这一句", systemImage: "play") }
-                    Button {
-                        player.play(from: seg.start, until: nil)
-                    } label: { Label("从这里往下播", systemImage: "play.square.stack") }
+                    Button { copy(seg.text) } label: { Label("复制这句", systemImage: "doc.on.doc") }
+                    Button { player.play(from: seg.start, until: seg.end) } label: { Label("只播这一句", systemImage: "play") }
+                    Button { player.play(from: seg.start, until: nil) } label: { Label("从这里往下播", systemImage: "play.square.stack") }
                     Button {
                         editText = seg.text
                         editing = seg
                     } label: { Label("改字", systemImage: "pencil") }
-                    Button {
-                        shareClip(start: seg.start, end: seg.end, text: seg.text)
-                    } label: { Label("分享这句录音", systemImage: "square.and.arrow.up") }
+                    Button { shareClip(start: seg.start, end: seg.end) } label: {
+                        Label("分享这句录音", systemImage: "square.and.arrow.up")
+                    }
                 }
             }
         }
+        .padding(8)
+        .cardBackground()
     }
 
-    private var organizedList: some View {
-        let lines = organizedLines
-        let activeID = activeLineID(in: lines)
-        let hasAnyTime = lines.contains { $0.hasTime }
-        return VStack(alignment: .leading, spacing: 6) {
-            if hasAnyTime {
-                Text("带 ▶︎ 的段落点一下就播放对应录音，长按可以分享这段录音")
-                    .font(.caption)
+    private func editSheet(_ seg: TranscriptSegment) -> some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 14) {
+                Button {
+                    player.play(from: seg.start, until: seg.end)
+                } label: {
+                    Label("听这句 · \(formatDuration(seg.start))", systemImage: "play.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.accent)
+                }
+                TextEditor(text: $editText)
+                    .scrollContentBackground(.hidden)
+                    .padding(10)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                Text("清空后保存会删掉这一句")
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
-                    .padding(.bottom, 4)
-            } else if !segments.isEmpty {
-                Text("点「重新整理」后，正文和要点就能点击播放")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 4)
             }
-            ForEach(lines) { line in
-                let active = line.id == activeID
-                MarkdownLine(raw: line.text, playable: line.hasTime)
-                    .padding(.vertical, line.hasTime ? 3 : 0)
-                    .padding(.horizontal, line.hasTime ? 4 : 0)
-                    .background(active ? Color.accentColor.opacity(0.15) : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 8))
-                    .contentShape(Rectangle())
-                    .id("line-\(line.id)")
-                    .onTapGesture {
-                        if let s = line.start, let e = line.end {
-                            player.play(from: s, until: singleSentence ? e : nil)
-                        }
+            .padding()
+            .navigationTitle("校对这句")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { editing = nil }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        processor.updateSegment(rec, id: seg.id, text: editText)
+                        editing = nil
                     }
-                    .contextMenu {
-                        if let s = line.start, let e = line.end {
-                            Button {
-                                player.play(from: s, until: e)
-                            } label: { Label("只播这一段", systemImage: "play") }
-                            Button {
-                                player.play(from: s, until: nil)
-                            } label: { Label("从这里往下播", systemImage: "play.square.stack") }
-                            Button {
-                                shareClip(start: s, end: e, text: MarkdownLine.plain(line.text))
-                            } label: { Label("分享这段录音", systemImage: "square.and.arrow.up") }
-                        }
-                        Button {
-                            UIPasteboard.general.string = MarkdownLine.plain(line.text)
-                        } label: { Label("复制这段文字", systemImage: "doc.on.doc") }
-                    }
+                    .fontWeight(.semibold)
+                }
             }
-            Toggle(isOn: $singleSentence) {
-                Text("点一段只播这一段").font(.footnote)
-            }
-            .padding(.top, 8)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .presentationDetents([.medium, .large])
     }
 
-    private func shareClip(start: Double, end: Double, text: String) {
+    // MARK: 菜单 / 分享
+
+    @ToolbarContentBuilder private var toolbarMenu: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button { copy(exportText) } label: { Label("复制全部文字", systemImage: "doc.on.doc") }
+                ShareLink(item: exportText) { Label("分享文字", systemImage: "text.quote") }
+                ShareLink(item: rec.fileURL) { Label("分享整段录音", systemImage: "waveform") }
+                Divider()
+                Button {
+                    newTitle = rec.title
+                    renaming = true
+                } label: { Label("改标题", systemImage: "pencil") }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+        }
+    }
+
+    private func shareClip(start: Double, end: Double) {
         guard !exporting else { return }
         exporting = true
         let title = "\(rec.title) \(formatDuration(start).replacingOccurrences(of: ":", with: "′"))"
@@ -412,83 +499,179 @@ struct RecordingDetailView: View {
     }
 }
 
-struct PlayerView: View {
+// MARK: - 播放器
+
+struct PlayerPanel: View {
     @ObservedObject var player: AudioPlayerModel
+    let waveform: [Float]
+    @Binding var singleSentence: Bool
+
+    private var progress: Double {
+        player.duration > 0 ? player.current / player.duration : 0
+    }
 
     var body: some View {
-        VStack(spacing: 6) {
-            Slider(value: Binding(
-                get: { player.current },
-                set: { player.seek($0) }
-            ), in: 0...max(player.duration, 0.1))
+        VStack(spacing: 10) {
+            WaveformScrubber(samples: waveform, progress: progress) { f in
+                player.seek(f * player.duration)
+            }
+            .frame(height: 38)
+
             HStack {
                 Text(formatDuration(player.current))
                 Spacer()
-                Button { player.skip(-15) } label: { Image(systemName: "gobackward.15") }
-                Button { player.toggle() } label: {
-                    Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 40))
-                }
-                .padding(.horizontal, 16)
-                Button { player.skip(15) } label: { Image(systemName: "goforward.15") }
-                Spacer()
-                Text(formatDuration(player.duration))
+                Text("-" + formatDuration(max(0, player.duration - player.current)))
             }
-            .font(.footnote.monospacedDigit())
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.secondary)
+
+            HStack {
+                Button { player.cycleRate() } label: {
+                    Text(String(format: "%g×", player.rate))
+                        .font(.footnote.weight(.semibold).monospacedDigit())
+                        .frame(width: 52, height: 30)
+                        .background(Color(.tertiarySystemFill), in: Capsule())
+                }
+                Spacer()
+                Button { player.skip(-15) } label: {
+                    Image(systemName: "gobackward.15").font(.title3)
+                }
+                Button { player.toggle() } label: {
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.title2)
+                        .foregroundStyle(.white)
+                        .frame(width: 58, height: 58)
+                        .background(Theme.recordGradient, in: Circle())
+                        .shadow(color: Theme.accent.opacity(0.35), radius: 10, y: 4)
+                }
+                .padding(.horizontal, 20)
+                Button { player.skip(15) } label: {
+                    Image(systemName: "goforward.15").font(.title3)
+                }
+                Spacer()
+                Button { singleSentence.toggle() } label: {
+                    Text("单句")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(singleSentence ? Color.white : Color.primary)
+                        .frame(width: 52, height: 30)
+                        .background(singleSentence ? Theme.accent : Color(.tertiarySystemFill), in: Capsule())
+                }
+                .accessibilityLabel(singleSentence ? "单句播放已开" : "单句播放已关")
+            }
             .buttonStyle(.plain)
+            .foregroundStyle(.primary)
         }
-        .padding(12)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+        .glassBackground(cornerRadius: 30)
     }
 }
 
-/// 一行 Markdown：标题、列表、待办、加粗
-struct MarkdownLine: View {
-    let raw: String
-    var playable = false
+// MARK: - 整理内容的分节和每一行
+
+struct OrgSection: Identifiable {
+    let id: Int
+    let title: String
+    var lines: [OrganizedLine]
+
+    var icon: String {
+        if title.contains("摘要") { return "text.quote" }
+        if title.contains("要点") { return "list.bullet" }
+        if title.contains("待办") { return "checklist" }
+        if title.contains("正文") { return "text.alignleft" }
+        return "doc.text"
+    }
+
+    static func build(from lines: [OrganizedLine]) -> [OrgSection] {
+        var out: [OrgSection] = []
+        var current = OrgSection(id: -1, title: "", lines: [])
+        for line in lines {
+            let t = line.text.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("# ") { continue } // 标题已经显示在顶部
+            if t.hasPrefix("## ") || t.hasPrefix("### ") {
+                if !current.lines.isEmpty || !current.title.isEmpty { out.append(current) }
+                let title = t.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
+                current = OrgSection(id: line.id, title: title, lines: [])
+                continue
+            }
+            if t.isEmpty { continue }
+            current.lines.append(line)
+        }
+        if !current.lines.isEmpty || !current.title.isEmpty { out.append(current) }
+        return out.filter { !$0.lines.isEmpty }
+    }
+}
+
+struct OrgLineView: View {
+    let line: OrganizedLine
+    let active: Bool
+
+    private static let speakerFirst: Set<Character> = ["甲", "乙", "丙", "丁", "戊", "说"]
 
     var body: some View {
-        let line = raw.trimmingCharacters(in: .whitespaces)
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            content(line)
-            if playable {
-                Image(systemName: "play.fill")
-                    .font(.caption2)
-                    .foregroundStyle(Color.accentColor)
+        HStack(alignment: .top, spacing: 10) {
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let s = line.start, line.hasTime {
+                HStack(spacing: 3) {
+                    Image(systemName: "play.fill").font(.system(size: 7))
+                    Text(formatDuration(s))
+                }
+                .font(.caption2.monospacedDigit().weight(.semibold))
+                .foregroundStyle(active ? Color.white : Theme.accent)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(active ? Theme.accent : Theme.accent.opacity(0.12), in: Capsule())
+                .padding(.top, 2)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, line.hasTime ? 6 : 0)
+        .padding(.horizontal, line.hasTime ? 8 : 0)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(active ? Theme.accent.opacity(0.10) : Color.clear)
+        )
+        .padding(.horizontal, line.hasTime ? -8 : 0)
     }
 
-    @ViewBuilder private func content(_ line: String) -> some View {
-        if line.hasPrefix("### ") {
-            Text(inline(String(line.dropFirst(4)))).font(.subheadline.bold()).padding(.top, 4)
-        } else if line.hasPrefix("## ") {
-            Text(inline(String(line.dropFirst(3)))).font(.headline).padding(.top, 10)
-        } else if line.hasPrefix("# ") {
-            Text(inline(String(line.dropFirst(2)))).font(.title3.bold())
-        } else if line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Image(systemName: line.hasPrefix("- [ ] ") ? "square" : "checkmark.square")
-                Text(inline(String(line.dropFirst(6))))
+    @ViewBuilder private var content: some View {
+        let t = line.text.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("- [ ] ") || t.hasPrefix("- [x] ") || t.hasPrefix("- [X] ") {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: t.hasPrefix("- [ ] ") ? "circle" : "checkmark.circle.fill")
+                    .foregroundStyle(Theme.ai)
+                Text(Self.inline(String(t.dropFirst(6)))).lineSpacing(4)
             }
-        } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("•")
-                Text(inline(String(line.dropFirst(2))))
+        } else if t.hasPrefix("- ") || t.hasPrefix("* ") {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Circle().fill(Theme.ai).frame(width: 6, height: 6).alignmentGuide(.firstTextBaseline) { d in d[.bottom] + 1 }
+                Text(Self.inline(String(t.dropFirst(2)))).lineSpacing(4)
             }
-        } else if line.isEmpty {
-            Color.clear.frame(height: 2)
+        } else if let sp = Self.speaker(t) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(sp.name)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(Theme.speakerColor(sp.name))
+                Text(Self.inline(sp.body)).lineSpacing(5)
+            }
         } else {
-            Text(inline(line))
+            Text(Self.inline(t)).lineSpacing(5)
         }
     }
 
-    private func inline(_ s: String) -> AttributedString {
+    static func speaker(_ t: String) -> (name: String, body: String)? {
+        guard let first = t.first, speakerFirst.contains(first) else { return nil }
+        guard let r = t.range(of: "：") ?? t.range(of: ":") else { return nil }
+        let name = String(t[..<r.lowerBound]).trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, name.count <= 10 else { return nil }
+        return (name, String(t[r.upperBound...]).trimmingCharacters(in: .whitespaces))
+    }
+
+    static func inline(_ s: String) -> AttributedString {
         (try? AttributedString(markdown: s)) ?? AttributedString(s)
     }
 
-    /// 去掉 Markdown 符号，用于复制
     static func plain(_ raw: String) -> String {
         var t = raw.trimmingCharacters(in: .whitespaces)
         for p in ["### ", "## ", "# ", "- [ ] ", "- [x] ", "- [X] ", "- ", "* "] where t.hasPrefix(p) {
@@ -496,6 +679,37 @@ struct MarkdownLine: View {
             break
         }
         return t.replacingOccurrences(of: "**", with: "")
+    }
+}
+
+struct TipLine: View {
+    let text: String
+    var body: some View {
+        Label(text, systemImage: "hand.tap")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+}
+
+struct EmptyHint: View {
+    let icon: String
+    let title: String
+    let text: String
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 30, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text(title).font(.headline)
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
+        .cardBackground()
     }
 }
 

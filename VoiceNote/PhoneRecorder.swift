@@ -6,6 +6,7 @@ final class PhoneRecorder: ObservableObject {
     @Published var isRecording = false
     @Published var elapsed: TimeInterval = 0
     @Published var level: Float = 0
+    @Published var levels: [Float] = Array(repeating: 0, count: 36)
 
     private var recorder: AVAudioRecorder?
     private var timer: Timer?
@@ -50,6 +51,8 @@ final class PhoneRecorder: ObservableObject {
         r.updateMeters()
         let db = r.averagePower(forChannel: 0)
         level = max(0, min(1, (db + 50) / 50))
+        levels.removeFirst()
+        levels.append(level)
     }
 
     func stop() -> (fileName: String, startedAt: Date)? {
@@ -60,6 +63,7 @@ final class PhoneRecorder: ObservableObject {
         timer = nil
         isRecording = false
         level = 0
+        levels = Array(repeating: 0, count: 36)
         UIApplication.shared.isIdleTimerDisabled = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         return (fileName, startedAt)
@@ -71,12 +75,17 @@ final class AudioPlayerModel: ObservableObject {
     @Published var isPlaying = false
     @Published var current: Double = 0
     @Published var duration: Double = 0
+    @Published var rate: Float = 1
+
+    static let rates: [Float] = [0.75, 1, 1.25, 1.5, 2]
 
     private var player: AVAudioPlayer?
     private var timer: Timer?
 
     func load(_ url: URL) {
         player = try? AVAudioPlayer(contentsOf: url)
+        player?.enableRate = true
+        player?.rate = rate
         player?.prepareToPlay()
         duration = player?.duration ?? 0
         current = 0
@@ -125,6 +134,12 @@ final class AudioPlayerModel: ObservableObject {
             isPlaying = false
             timer?.invalidate()
         }
+    }
+
+    func cycleRate() {
+        let i = Self.rates.firstIndex(of: rate) ?? 1
+        rate = Self.rates[(i + 1) % Self.rates.count]
+        player?.rate = rate
     }
 
     func seek(_ t: Double) {
