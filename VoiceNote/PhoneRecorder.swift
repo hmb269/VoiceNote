@@ -136,6 +136,11 @@ final class AudioPlayerModel: ObservableObject {
         }
     }
 
+    func setRate(_ r: Float) {
+        rate = r
+        player?.rate = r
+    }
+
     func cycleRate() {
         let i = Self.rates.firstIndex(of: rate) ?? 1
         rate = Self.rates[(i + 1) % Self.rates.count]

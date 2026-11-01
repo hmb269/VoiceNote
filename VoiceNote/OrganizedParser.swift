@@ -72,8 +72,8 @@ enum OrganizedParser {
         let lineGrams = bigrams(body)
         guard !lineGrams.isEmpty else { return nil }
 
-        // 先在光标后面的窗口里找，找不到再全局找
-        let windows = [(cursor, min(segGrams.count, cursor + 25)), (0, segGrams.count)]
+        // 只在光标后面找，保证时间是往后走的
+        let windows = [(cursor, min(segGrams.count, cursor + 30))]
         for (lo, hi) in windows where lo < hi {
             var first: Int?
             var last: Int?

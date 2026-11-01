@@ -23,6 +23,7 @@ struct RecordingDetailView: View {
     @State private var segs: [TranscriptSegment] = []
     @State private var lines: [OrganizedLine] = []
     @State private var waveform: [Float] = []
+    @State private var showFullPlayer = false
 
     private var isBusy: Bool { processor.busy.contains(rec.id) }
 
@@ -43,33 +44,18 @@ struct RecordingDetailView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    header
-                    statusCard
-                    actions
-                    tabSwitcher
-                    content
-                }
-                .padding(.horizontal, 18)
-                .padding(.top, 8)
-                .padding(.bottom, 24)
-            }
-            .background(Color(.systemGroupedBackground))
-            .onChange(of: activeSegmentID) { _, id in
-                guard let id, player.isPlaying, tab == 1 else { return }
-                withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(id, anchor: .center) }
-            }
-            .onChange(of: activeLineID) { _, id in
-                guard let id, player.isPlaying, tab == 0 else { return }
-                withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo("line-\(id)", anchor: .center) }
-            }
+        TabView(selection: $tab) {
+            page(index: 0) { organizedContent }
+                .tag(0)
+            page(index: 1) { transcriptContent }
+                .tag(1)
         }
-        .safeAreaInset(edge: .bottom) {
-            PlayerPanel(player: player, waveform: waveform, singleSentence: $singleSentence)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 2)
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .overlay(alignment: .bottomTrailing) {
+            MiniPlayer(player: player, singleSentence: $singleSentence, showFull: $showFullPlayer)
+                .padding(.trailing, 18)
+                .padding(.bottom, 10)
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarMenu }
@@ -85,6 +71,14 @@ struct RecordingDetailView: View {
         .sheet(item: $shareItem) { item in
             ActivityView(items: item.items)
                 .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showFullPlayer) {
+            PlayerPanel(player: player, waveform: waveform, singleSentence: $singleSentence)
+                .padding(.horizontal, 14)
+                .padding(.top, 18)
+                .presentationDetents([.height(230)])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(.thinMaterial)
         }
         .overlay {
             if exporting {
@@ -126,7 +120,7 @@ struct RecordingDetailView: View {
             } else {
                 let w = await WaveformLoader.load(url: rec.fileURL, count: 72)
                 WaveformLoader.store(rec.fileURL, w)
-                withAnimation(.easeOut(duration: 0.3)) { waveform = w }
+                waveform = w
             }
         }
         .onDisappear { player.stop() }
@@ -135,6 +129,43 @@ struct RecordingDetailView: View {
             if !newValue.isEmpty { withAnimation(.snappy) { tab = 0 } }
         }
         .onChange(of: rec.segmentsData) { _, _ in refresh() }
+    }
+
+    /// 每一页：顶部信息 + 吸顶的切换条 + 内容。左右滑动切换整理/原文
+    private func page<Content: View>(index: Int, @ViewBuilder content: () -> Content) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 18, pinnedViews: [.sectionHeaders]) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        header
+                        statusCard
+                        actions
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 6)
+
+                    Section {
+                        content()
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 110)
+                    } header: {
+                        tabSwitcher
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 8)
+                            .background(Color(.systemGroupedBackground))
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+            .onChange(of: activeSegmentID) { _, id in
+                guard index == 1, let id, player.isPlaying, tab == 1 else { return }
+                withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(id, anchor: .center) }
+            }
+            .onChange(of: activeLineID) { _, id in
+                guard index == 0, let id, player.isPlaying, tab == 0 else { return }
+                withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo("line-\(id)", anchor: .center) }
+            }
+        }
     }
 
     private func refresh() {
@@ -290,28 +321,28 @@ struct RecordingDetailView: View {
         .background(Color(.tertiarySystemFill), in: Capsule())
     }
 
-    @ViewBuilder private var content: some View {
-        if tab == 0 {
-            if rec.summary.isEmpty {
-                EmptyHint(icon: "sparkles",
-                          title: "还没整理",
-                          text: rec.hasSpeech ? "点上面的「AI 整理」，生成摘要、要点和待办" : "先转写，再让 AI 整理")
-            } else {
-                organizedView
-            }
+    @ViewBuilder private var organizedContent: some View {
+        if rec.summary.isEmpty {
+            EmptyHint(icon: "sparkles",
+                      title: "还没整理",
+                      text: rec.hasSpeech ? "点上面的「AI 整理」，生成摘要、要点和待办\n往左滑可以看原文" : "先转写，再让 AI 整理")
         } else {
-            if rec.transcript.isEmpty {
-                EmptyHint(icon: "text.bubble", title: "还没转写", text: "点上面的「转写」，选本机或阿里云")
-            } else if !segs.isEmpty {
-                transcriptView
-            } else {
-                Text(rec.transcript)
-                    .lineSpacing(5)
-                    .textSelection(.enabled)
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .cardBackground()
-            }
+            organizedView
+        }
+    }
+
+    @ViewBuilder private var transcriptContent: some View {
+        if rec.transcript.isEmpty {
+            EmptyHint(icon: "text.bubble", title: "还没转写", text: "点上面的「转写」，选本机或阿里云")
+        } else if !segs.isEmpty {
+            transcriptView
+        } else {
+            Text(rec.transcript)
+                .lineSpacing(5)
+                .textSelection(.enabled)
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .cardBackground()
         }
     }
 
@@ -323,7 +354,7 @@ struct RecordingDetailView: View {
         let hasTime = lines.contains { $0.hasTime }
         return VStack(alignment: .leading, spacing: 16) {
             if hasTime {
-                TipLine(text: "点段落播放对应录音 · 长按复制或分享这段录音")
+                TipLine(text: "点段落播放 · 长按复制或分享录音 · 左滑看原文")
             } else if !segs.isEmpty {
                 TipLine(text: "点「重新整理」后，每一段都能点着播放")
             }
@@ -369,7 +400,7 @@ struct RecordingDetailView: View {
     private var transcriptView: some View {
         let activeID = activeSegmentID
         return VStack(alignment: .leading, spacing: 4) {
-            TipLine(text: "点一句播放 · 长按复制、改字或分享这句录音")
+            TipLine(text: "点一句播放 · 长按复制、改字或分享 · 右滑回整理")
                 .padding(.bottom, 8)
             ForEach(segs) { seg in
                 let active = seg.id == activeID
@@ -500,6 +531,87 @@ struct RecordingDetailView: View {
 }
 
 // MARK: - 播放器
+
+/// 右下角悬浮的小圆播放键：点按播放/暂停，长按更多控制
+struct MiniPlayer: View {
+    @ObservedObject var player: AudioPlayerModel
+    @Binding var singleSentence: Bool
+    @Binding var showFull: Bool
+
+    private var progress: Double {
+        player.duration > 0 ? min(1, player.current / player.duration) : 0
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if player.isPlaying || player.current > 0 {
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(formatDuration(player.current))
+                        .font(.footnote.weight(.semibold).monospacedDigit())
+                    Text(player.rate == 1 ? formatDuration(player.duration) : String(format: "%g×", player.rate))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .glassBackground(cornerRadius: 18)
+                .onTapGesture { showFull = true }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+
+            ZStack {
+                Circle()
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 3)
+                Circle()
+                    .trim(from: 0, to: progress)
+                    .stroke(Theme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .offset(x: player.isPlaying ? 0 : 1.5)
+                    .frame(width: 48, height: 48)
+                    .background(Theme.recordGradient, in: Circle())
+            }
+            .frame(width: 58, height: 58)
+            .padding(4)
+            .glassBackground(cornerRadius: 33)
+            .shadow(color: Theme.accent.opacity(0.25), radius: 12, y: 5)
+            .contentShape(Circle())
+            .onTapGesture {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                player.toggle()
+            }
+            .contextMenu {
+                Button { player.skip(-15) } label: { Label("后退 15 秒", systemImage: "gobackward.15") }
+                Button { player.skip(15) } label: { Label("前进 15 秒", systemImage: "goforward.15") }
+                Menu {
+                    ForEach(AudioPlayerModel.rates, id: \.self) { r in
+                        Button {
+                            player.setRate(r)
+                        } label: {
+                            if r == player.rate {
+                                Label(String(format: "%g×", r), systemImage: "checkmark")
+                            } else {
+                                Text(String(format: "%g×", r))
+                            }
+                        }
+                    }
+                } label: {
+                    Label("倍速 \(String(format: "%g×", player.rate))", systemImage: "speedometer")
+                }
+                Toggle(isOn: $singleSentence) {
+                    Label("点一句只播一句", systemImage: "text.line.first.and.arrowtriangle.forward")
+                }
+                Divider()
+                Button { showFull = true } label: { Label("展开播放器", systemImage: "waveform") }
+            }
+            .accessibilityLabel(player.isPlaying ? "暂停" : "播放")
+        }
+        .animation(.spring(duration: 0.35), value: player.isPlaying || player.current > 0)
+    }
+}
+
 
 struct PlayerPanel: View {
     @ObservedObject var player: AudioPlayerModel
