@@ -3,14 +3,34 @@ import SwiftData
 import UIKit
 
 enum RootTab: Hashable {
-    case home, favorites, settings, search
+    case home, favorites, record, importFile, settings, search
 }
 
 struct ContentView: View {
     @ObservedObject private var processor = Processor.shared
     @AppStorage("appearance") private var appearance = 1
     @State private var tab: RootTab = .home
+    @State private var lastTab: RootTab = .home
     @State private var alertText: String?
+    @State private var showPicker = false
+    @StateObject private var recorder = PhoneRecorder()
+
+    /// 「录音」「导入」是动作，不切页面
+    private var selection: Binding<RootTab> {
+        Binding(get: { tab }, set: { new in
+            switch new {
+            case .record:
+                toggleRecording(recorder)
+            case .importFile:
+                showPicker = true
+            default:
+                if new != tab {
+                    if tab != .search { lastTab = tab }
+                    tab = new
+                }
+            }
+        })
+    }
 
     private var scheme: ColorScheme? {
         switch appearance {
@@ -21,19 +41,40 @@ struct ContentView: View {
     }
 
     var body: some View {
-        TabView(selection: $tab) {
-            Tab("录音", systemImage: "waveform", value: RootTab.home) {
+        TabView(selection: selection) {
+            Tab("首页", systemImage: "waveform", value: RootTab.home) {
                 HomeView()
             }
             Tab("收藏", systemImage: "star.fill", value: RootTab.favorites) {
                 FavoritesView()
             }
+            Tab(recorder.isRecording ? formatDuration(recorder.elapsed) : "录音",
+                systemImage: recorder.isRecording ? "stop.circle.fill" : "mic.circle.fill",
+                value: RootTab.record) {
+                Color.clear
+            }
+            Tab("导入", systemImage: "square.and.arrow.down", value: RootTab.importFile) {
+                Color.clear
+            }
             Tab("设置", systemImage: "gearshape.fill", value: RootTab.settings) {
                 SettingsView(showDone: false)
             }
             Tab(value: RootTab.search, role: .search) {
-                SearchView()
+                SearchView { withAnimation { tab = lastTab } }
             }
+        }
+        .overlay(alignment: .bottom) {
+            if recorder.isRecording {
+                RecordingBanner(recorder: recorder)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 92)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(duration: 0.35), value: recorder.isRecording)
+        .sheet(isPresented: $showPicker) {
+            DocumentPicker { urls in Processor.shared.importFiles(urls) }
+                .ignoresSafeArea()
         }
         .tint(Theme.accent)
         .preferredColorScheme(scheme)
@@ -70,14 +111,9 @@ struct ContentView: View {
 struct HomeView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \Recording.createdAt, order: .reverse) private var recordings: [Recording]
-    @StateObject private var recorder = PhoneRecorder()
-    @State private var showPicker = false
     @State private var showCalendar = false
-    @State private var heroPage = 0
     @State private var toDelete: Recording?
     @State private var selectedDay = Calendar.current.startOfDay(for: Date())
-
-    private var heroItems: [Recording] { Array(recordings.prefix(6)) }
 
     private var weekDays: [Date] {
         let cal = Calendar.current
@@ -97,41 +133,18 @@ struct HomeView: View {
                     if recordings.isEmpty {
                         EmptyHero()
                     } else {
-                        hero
                         weekSection
                     }
                 }
-                .padding(.bottom, 40)
+                .padding(.top, 12)
+                .padding(.bottom, 120)
             }
-            .ignoresSafeArea(edges: .top)
             .scrollIndicators(.hidden)
             .background(Color(.systemBackground))
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showPicker = true } label: { Image(systemName: "square.and.arrow.down") }
-                        .accessibilityLabel("导入音频")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    RecordToolbarButton(recorder: recorder)
-                }
-            }
-            .toolbarBackground(.hidden, for: .navigationBar)
-            .safeAreaInset(edge: .bottom) {
-                if recorder.isRecording {
-                    RecordingBanner(recorder: recorder)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 6)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-            .animation(.spring(duration: 0.35), value: recorder.isRecording)
+            .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Recording.self) { RecordingDetailView(rec: $0) }
             .navigationDestination(for: String.self) { key in
                 if key == "all" { AllRecordingsView() }
-            }
-            .sheet(isPresented: $showPicker) {
-                DocumentPicker { urls in Processor.shared.importFiles(urls) }
-                    .ignoresSafeArea()
             }
             .sheet(isPresented: $showCalendar) {
                 CalendarSheet()
@@ -146,34 +159,6 @@ struct HomeView: View {
                 Text("录音文件和文字都会删掉，不能恢复")
             }
         }
-    }
-
-    private var hero: some View {
-        ZStack(alignment: .bottom) {
-            TabView(selection: $heroPage) {
-                ForEach(Array(heroItems.enumerated()), id: \.element.id) { i, rec in
-                    NavigationLink(value: rec) {
-                        HeroPage(rec: rec)
-                    }
-                    .buttonStyle(.plain)
-                    .tag(i)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-
-            if heroItems.count > 1 {
-                HStack(spacing: 7) {
-                    ForEach(0..<heroItems.count, id: \.self) { i in
-                        Capsule()
-                            .fill(i == heroPage ? Color.primary : Color.primary.opacity(0.25))
-                            .frame(width: i == heroPage ? 18 : 7, height: 7)
-                    }
-                }
-                .animation(.snappy, value: heroPage)
-                .padding(.bottom, 4)
-            }
-        }
-        .frame(height: 500)
     }
 
     // 最近七天：日期条 + 当天的录音
@@ -225,7 +210,7 @@ struct HomeView: View {
                             .font(.system(size: 30, weight: .light))
                             .foregroundStyle(.secondary)
                         Text("这天没有录音").font(.headline)
-                        Text("换一天看看，或者点右上角的麦克风开始录")
+                        Text("换一天看看，或者点底部的「录音」开始录")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -605,9 +590,9 @@ struct EmptyHero: View {
             Text("开始你的第一段录音")
                 .font(.system(.title2, design: .rounded).weight(.bold))
             VStack(alignment: .leading, spacing: 8) {
-                Label("点右上角的麦克风开始录，锁屏也能继续", systemImage: "mic")
+                Label("点底部的「录音」开始录，锁屏也能继续", systemImage: "mic")
                 Label("手表上录的会自动同步过来", systemImage: "applewatch")
-                Label("右上角导入，或从语音备忘录分享", systemImage: "square.and.arrow.down")
+                Label("点底部的「导入」，或从语音备忘录分享", systemImage: "square.and.arrow.down")
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)
@@ -715,6 +700,7 @@ struct FavoritesView: View {
 // MARK: - 搜索
 
 struct SearchView: View {
+    var onBack: () -> Void = {}
     @Environment(\.modelContext) private var context
     @Query(sort: \Recording.createdAt, order: .reverse) private var recordings: [Recording]
     @State private var query = ""
@@ -762,6 +748,33 @@ struct SearchView: View {
             .overlay {
                 if results.isEmpty && !query.isEmpty {
                     ContentUnavailableView.search(text: query)
+                }
+            }
+            .overlay(alignment: .leading) {
+                // 从屏幕左边缘往右滑，回到上一个页面
+                Color.clear
+                    .frame(width: 28)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 15)
+                            .onEnded { v in
+                                if v.translation.width > 60 && abs(v.translation.height) < 80 { onBack() }
+                            }
+                    )
+            }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 30)
+                    .onEnded { v in
+                        if v.startLocation.x < 50 && v.translation.width > 90
+                            && abs(v.translation.height) < abs(v.translation.width) / 2 {
+                            onBack()
+                        }
+                    }
+            )
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(action: onBack) { Image(systemName: "chevron.left") }
+                        .accessibilityLabel("返回")
                 }
             }
             .navigationTitle("搜索")
