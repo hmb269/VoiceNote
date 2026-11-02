@@ -173,8 +173,17 @@ final class Processor: ObservableObject {
                 }
             } else {
                 try FileManager.default.copyItem(at: url, to: dest)
+                // 系统读不了的格式（aac 裸流、amr 等）转成 m4a
+                if !AudioTools.isReadable(dest) {
+                    let m4a = Storage.recordingsDir.appendingPathComponent("\(UUID().uuidString).m4a")
+                    try await AudioTools.convertToM4A(dest, dest: m4a)
+                    try? FileManager.default.removeItem(at: dest)
+                    ingest(fileName: m4a.lastPathComponent, source: .imported, createdAt: created, title: title)
+                    return true
+                }
             }
         } catch {
+            try? FileManager.default.removeItem(at: dest)
             lastError = "导入「\(title)」失败：\(error.localizedDescription)"
             return false
         }
@@ -240,7 +249,24 @@ final class Processor: ObservableObject {
         rec.errorMessage = ""
         save()
 
-        let url = rec.fileURL
+        var url = rec.fileURL
+        // 以前导入的、系统读不了的格式，转写前先转成 m4a
+        if !AudioTools.isReadable(url) {
+            let m4a = Storage.recordingsDir.appendingPathComponent("\(UUID().uuidString).m4a")
+            do {
+                try await AudioTools.convertToM4A(url, dest: m4a)
+                try? FileManager.default.removeItem(at: url)
+                rec.fileName = m4a.lastPathComponent
+                rec.duration = AudioTools.duration(of: m4a)
+                url = m4a
+                save()
+            } catch {
+                rec.status = .failed
+                rec.errorMessage = "转写失败：\(error.localizedDescription)"
+                save()
+                return
+            }
+        }
         let report: (Double) -> Void = { p in
             Task { @MainActor in Processor.shared.progress[id] = p }
         }
