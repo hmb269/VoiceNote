@@ -396,7 +396,7 @@ final class BGTaskBox {
     static func begin(_ name: String) -> BGTaskBox {
         let b = BGTaskBox()
         b.id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak b] in
-            Task { @MainActor in b?.end() }
+            MainActor.assumeIsolated { b?.end() }
         }
         return b
     }
