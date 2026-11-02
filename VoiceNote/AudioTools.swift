@@ -23,6 +23,7 @@ enum AudioTools {
         if ascii(0..<4) == "RIFF" { return "wav" }
         if ascii(0..<4) == "OggS" { return "ogg" }
         if ascii(0..<4) == "fLaC" { return "flac" }
+        if head[0] == 0x1A && head[1] == 0x45 && head[2] == 0xDF && head[3] == 0xA3 { return "webm" }
         if ascii(0..<4) == "caff" { return "caf" }
         if ascii(0..<4) == "FORM" { return "aiff" }
         if ascii(0..<5) == "#!AMR" { return ascii(0..<8) == "#!AMR-WB" ? "awb" : "amr" }
@@ -159,6 +160,11 @@ enum AudioTools {
             let fixed = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).\(real)")
             try? FileManager.default.copyItem(at: src, to: fixed)
             src = fixed
+        }
+        if ["webm", "mka", "mkv"].contains(src.pathExtension.lowercased()) {
+            try await WebMDecoder.decodeToM4A(src, dest: dest)
+            guard isReadable(dest) else { throw VNError("WebM 转换后还是读不了") }
+            return
         }
         if src.pathExtension.lowercased() == "mp3" {
             // mp3 先用内置解码器，最稳；不行再交给系统
