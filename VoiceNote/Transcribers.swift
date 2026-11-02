@@ -248,29 +248,34 @@ enum AliyunTranscriber {
     }
 }
 
-// MARK: - 硅基流动 SenseVoice（OpenAI 兼容的转写接口）
+// MARK: - OpenAI 兼容的转写接口（硅基流动、智谱 GLM-ASR、自定义 Whisper 等）
 
-enum SiliconTranscriber {
-    static func transcribe(url: URL, apiKey: String, model: String,
+enum FileTranscriber {
+    static func transcribe(url: URL, endpoint: String, apiKey: String, model: String,
+                           chunkSeconds: Double, name: String,
                            progress: @escaping (Double) -> Void) async throws -> [TranscriptSegment] {
-        let chunks = try AudioTools.splitToWav(url: url, chunkSeconds: 30)
+        var ep = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        while ep.hasSuffix("/") { ep.removeLast() }
+        if !ep.hasSuffix("/audio/transcriptions") { ep += "/audio/transcriptions" }
+        guard let endpointURL = URL(string: ep) else { throw VNError("\(name)的接口地址不对") }
+
+        let chunks = try AudioTools.splitToWav(url: url, chunkSeconds: chunkSeconds)
         defer { AudioTools.cleanup(chunks) }
-        guard let endpoint = URL(string: "https://api.siliconflow.cn/v1/audio/transcriptions") else { return [] }
 
         var all: [TranscriptSegment] = []
         for (i, chunk) in chunks.enumerated() {
             try Task.checkCancellation()
             let boundary = "VN-\(UUID().uuidString)"
             var body = Data()
-            func field(_ name: String, _ value: String) {
-                body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".data(using: .utf8)!)
+            func field(_ k: String, _ v: String) {
+                body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(k)\"\r\n\r\n\(v)\r\n".data(using: .utf8)!)
             }
             field("model", model)
             body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
             body.append(try Data(contentsOf: chunk.url))
             body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
 
-            var req = URLRequest(url: endpoint)
+            var req = URLRequest(url: endpointURL)
             req.httpMethod = "POST"
             req.timeoutInterval = 120
             req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -280,16 +285,58 @@ enum SiliconTranscriber {
             let (data, resp) = try await URLSession.shared.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            guard (200..<300).contains(code), var text = json?["text"] as? String else {
-                let msg = (json?["message"] as? String) ?? String(data: data, encoding: .utf8).map { String($0.prefix(200)) } ?? ""
-                throw VNError("硅基流动转写失败（HTTP \(code)）：\(msg)")
+            var text: String?
+            if let t = json?["text"] as? String { text = t }
+            if text == nil, let choices = json?["choices"] as? [[String: Any]],
+               let msg = choices.first?["message"] as? [String: Any] {
+                text = msg["content"] as? String
+            }
+            guard (200..<300).contains(code), var t = text else {
+                var msg = String(data: data, encoding: .utf8).map { String($0.prefix(200)) } ?? ""
+                if let err = json?["error"] as? [String: Any], let m = err["message"] as? String { msg = m }
+                else if let m = json?["message"] as? String { msg = m }
+                throw VNError("\(name)转写失败（HTTP \(code)）：\(msg)")
             }
             // SenseVoice 会带 <|zh|><|NEUTRAL|> 这类标签
-            text = text.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
-            all += SegmentTools.splitEvenly(text, start: chunk.start, duration: chunk.duration)
+            t = t.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
+            all += SegmentTools.splitEvenly(t, start: chunk.start, duration: chunk.duration)
             progress(Double(i + 1) / Double(chunks.count))
         }
         return all
+    }
+}
+
+/// 根据设置里选的转写方式调用对应的服务
+enum Transcription {
+    static func run(_ url: URL, engine: ASREngine, progress: @escaping (Double) -> Void) async throws -> [TranscriptSegment] {
+        func key(_ k: KeyName) throws -> String {
+            guard let v = Keychain.get(k) else {
+                throw VNError("还没填\(engine.title)的 API Key，到 设置 → 语音转文字 里填")
+            }
+            return v
+        }
+        switch engine {
+        case .apple:
+            return try await AppleTranscriber.transcribe(url: url, localeID: AppConfig.appleLocale, progress: progress)
+        case .aliyun:
+            return try await AliyunTranscriber.transcribe(url: url, apiKey: try key(.aliyun),
+                                                          baseURL: AppConfig.aliyunBaseURL,
+                                                          model: AppConfig.aliyunModel,
+                                                          language: AppConfig.aliyunLanguage,
+                                                          progress: progress)
+        case .siliconflow:
+            return try await FileTranscriber.transcribe(url: url, endpoint: "https://api.siliconflow.cn/v1",
+                                                        apiKey: try key(.siliconflow), model: AppConfig.siliconModel,
+                                                        chunkSeconds: 60, name: "硅基流动", progress: progress)
+        case .zhipu:
+            return try await FileTranscriber.transcribe(url: url, endpoint: "https://open.bigmodel.cn/api/paas/v4",
+                                                        apiKey: try key(.zhipu), model: AppConfig.zhipuASRModel,
+                                                        chunkSeconds: 25, name: "智谱", progress: progress)
+        case .custom:
+            return try await FileTranscriber.transcribe(url: url, endpoint: AppConfig.customASRBase,
+                                                        apiKey: try key(.asrCustom), model: AppConfig.customASRModel,
+                                                        chunkSeconds: 60, name: "自定义接口", progress: progress)
+        }
     }
 }
 
@@ -434,6 +481,20 @@ enum Organizer {
     - 原文没有时间标记就都不用写。
     """
 
+    /// 很短的录音（几句话）只要标题和一句话摘要，避免模型硬凑出一大篇
+    static let shortPrompt = """
+    用户给你一段很短的语音转写，只有一两句话。可能有同音错字，按上下文修正，不要编造。
+    只输出下面三部分，不要多余解释，〔 〕里是要你填的内容，输出时不要保留〔 〕：
+
+    # 〔不超过12个字的标题〕
+
+    ## 摘要
+    〔一句话说明这段话的意思〕
+
+    ## 整理后的正文
+    〔修正错字、补好标点后的原话，不要扩写〕
+    """
+
     static func systemPrompt(_ style: OrganizeStyle) -> String {
         let format: String
         switch style {
@@ -540,7 +601,7 @@ enum Organizer {
         let body: [String: Any] = [
             "model": model,
             "messages": [
-                ["role": "system", "content": systemPrompt(style)],
+                ["role": "system", "content": transcript.count < 120 ? shortPrompt : systemPrompt(style)],
                 ["role": "user", "content": "下面是录音转写原文：\n\n" + source],
             ],
             "temperature": 0.3,

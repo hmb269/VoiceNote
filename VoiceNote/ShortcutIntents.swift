@@ -6,13 +6,14 @@ import UniformTypeIdentifiers
 // MARK: - 选项
 
 enum ShortcutEngine: String, AppEnum {
-    case byDefault, apple, siliconflow, aliyun
+    case byDefault, apple, siliconflow, zhipu, aliyun
 
     static var typeDisplayRepresentation: TypeDisplayRepresentation = "转写方式"
     static var caseDisplayRepresentations: [ShortcutEngine: DisplayRepresentation] = [
         .byDefault: "按 App 设置",
         .apple: "苹果本机（免费）",
-        .siliconflow: "硅基流动 SenseVoice",
+        .siliconflow: "硅基流动",
+        .zhipu: "智谱 GLM-ASR",
         .aliyun: "阿里云百炼",
     ]
 
@@ -21,6 +22,7 @@ enum ShortcutEngine: String, AppEnum {
         case .byDefault: return AppConfig.asrEngine
         case .apple: return .apple
         case .siliconflow: return .siliconflow
+        case .zhipu: return .zhipu
         case .aliyun: return .aliyun
         }
     }
@@ -65,24 +67,7 @@ enum ShortcutContent: String, AppEnum {
 @MainActor
 enum ShortcutWorker {
     static func transcribe(_ url: URL, engine: ASREngine) async throws -> [TranscriptSegment] {
-        switch engine {
-        case .apple:
-            return try await AppleTranscriber.transcribe(url: url, localeID: AppConfig.appleLocale) { _ in }
-        case .siliconflow:
-            guard let key = Keychain.get(.siliconflow) else {
-                throw VNError("还没在 App 设置里填硅基流动的 API Key")
-            }
-            return try await SiliconTranscriber.transcribe(url: url, apiKey: key,
-                                                           model: AppConfig.siliconModel) { _ in }
-        case .aliyun:
-            guard let key = Keychain.get(.aliyun) else {
-                throw VNError("还没在 App 设置里填阿里云百炼的 API Key")
-            }
-            return try await AliyunTranscriber.transcribe(url: url, apiKey: key,
-                                                          baseURL: AppConfig.aliyunBaseURL,
-                                                          model: AppConfig.aliyunModel,
-                                                          language: AppConfig.aliyunLanguage) { _ in }
-        }
+        try await Transcription.run(url, engine: engine) { _ in }
     }
 
     static func organize(_ text: String, segments: [TranscriptSegment],

@@ -176,7 +176,8 @@ final class Processor: ObservableObject {
         save()
         guard rec.transcript.isEmpty else { return }
         await transcribe(rec, engine: AppConfig.asrEngine)
-        if rec.status == .done, rec.hasSpeech, AppConfig.autoOrganize,
+        // 只有一两句话的录音不自动整理，需要的话手动点「AI 整理」
+        if rec.status == .done, rec.hasSpeech, rec.transcript.count >= 40, AppConfig.autoOrganize,
            Keychain.get(AppConfig.llmProvider.keyName) != nil {
             await organize(rec)
         }
@@ -217,28 +218,7 @@ final class Processor: ObservableObject {
             Task { @MainActor in Processor.shared.progress[id] = p }
         }
         do {
-            let segs: [TranscriptSegment]
-            switch engine {
-            case .apple:
-                segs = try await AppleTranscriber.transcribe(url: url, localeID: AppConfig.appleLocale,
-                                                             progress: report)
-            case .siliconflow:
-                guard let key = Keychain.get(.siliconflow) else {
-                    throw VNError("还没填硅基流动的 API Key，到 设置 → 语音转文字 里填")
-                }
-                segs = try await SiliconTranscriber.transcribe(url: url, apiKey: key,
-                                                               model: AppConfig.siliconModel,
-                                                               progress: report)
-            case .aliyun:
-                guard let key = Keychain.get(.aliyun) else {
-                    throw VNError("还没填阿里云百炼的 API Key，到设置里填")
-                }
-                segs = try await AliyunTranscriber.transcribe(url: url, apiKey: key,
-                                                              baseURL: AppConfig.aliyunBaseURL,
-                                                              model: AppConfig.aliyunModel,
-                                                              language: AppConfig.aliyunLanguage,
-                                                              progress: report)
-            }
+            let segs = try await Transcription.run(url, engine: engine, progress: report)
             rec.segments = segs
             rec.engineUsed = engine.shortLabel
             rec.status = .done
@@ -304,7 +284,7 @@ final class Processor: ObservableObject {
                 guard !box.finished, Date().timeIntervalSince(box.lastUI) > 0.5 else { return }
                 box.lastUI = Date()
                 if text.isEmpty {
-                    p.organizeInfo[id] = thinking > 0 ? "模型在思考（\(thinking) 字）…" : "等待模型回复…"
+                    p.organizeInfo[id] = thinking > 0 ? "模型还在内部思考（已想 \(thinking) 字，不算结果）…" : "等待模型回复…"
                 } else {
                     p.organizeInfo[id] = "正在写，已写 \(text.count) 字"
                     rec.summary = Organizer.clean(text)

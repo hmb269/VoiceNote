@@ -23,7 +23,7 @@ targets:
     info:
       path: Support/VoiceNote-Info.plist
       properties:
-        CFBundleDisplayName: 录音转写
+        CFBundleDisplayName: 汀汀
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSRequiresIPhoneOS: true
@@ -68,7 +68,7 @@ targets:
     info:
       path: Support/VoiceNoteWatch-Info.plist
       properties:
-        CFBundleDisplayName: 录音转写
+        CFBundleDisplayName: 汀汀
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         WKApplication: true

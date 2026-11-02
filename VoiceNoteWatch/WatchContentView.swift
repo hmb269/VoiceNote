@@ -8,7 +8,7 @@ struct WatchContentView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
-                Text(recorder.isRecording ? formatTime(recorder.elapsed) : "录音转写")
+                Text(recorder.isRecording ? formatTime(recorder.elapsed) : "汀汀")
                     .font(recorder.isRecording ? Font.title2.monospacedDigit().weight(.semibold) : Font.headline)
                     .foregroundStyle(recorder.isRecording ? Color.red : Color.primary)
 

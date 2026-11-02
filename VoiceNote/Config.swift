@@ -2,20 +2,16 @@ import Foundation
 import Security
 
 enum ASREngine: String, CaseIterable, Identifiable {
-    case apple, siliconflow, aliyun
+    case apple, siliconflow, aliyun, zhipu, custom
     var id: String { rawValue }
-    var label: String {
-        switch self {
-        case .apple: return "苹果本机（免费）"
-        case .siliconflow: return "硅基流动 SenseVoice（免费）"
-        case .aliyun: return "阿里云百炼（约0.12元/小时）"
-        }
-    }
+    var label: String { "\(title)（\(price.components(separatedBy: " · ").first ?? "")）" }
     var shortLabel: String {
         switch self {
         case .apple: return "苹果本机"
-        case .siliconflow: return "SenseVoice"
+        case .siliconflow: return "硅基流动"
         case .aliyun: return "阿里云"
+        case .zhipu: return "智谱 ASR"
+        case .custom: return "自定义"
         }
     }
     var title: String {
@@ -23,6 +19,8 @@ enum ASREngine: String, CaseIterable, Identifiable {
         case .apple: return "苹果自带转写"
         case .siliconflow: return "硅基流动"
         case .aliyun: return "阿里云百炼"
+        case .zhipu: return "智谱 GLM-ASR"
+        case .custom: return "自定义接口"
         }
     }
     var modelLabel: String {
@@ -30,20 +28,44 @@ enum ASREngine: String, CaseIterable, Identifiable {
         case .apple: return "系统语音识别，在手机上完成"
         case .siliconflow: return AppConfig.siliconModel
         case .aliyun: return AppConfig.aliyunModel
+        case .zhipu: return AppConfig.zhipuASRModel
+        case .custom: return AppConfig.customASRModel.isEmpty ? "OpenAI 兼容（Whisper 等）" : AppConfig.customASRModel
         }
     }
     var price: String {
         switch self {
         case .apple: return "免费 · 不用网络也能转"
-        case .siliconflow: return "免费 · 云端 · 能听懂粤语"
+        case .siliconflow: return "免费 · 云端 · SenseVoice 懂粤语，TeleSpeech 懂方言"
         case .aliyun: return "约 0.12 元/小时 · 粤普混说最准"
+        case .zhipu: return "约 0.06 元/分钟 · 和智谱整理共用 Key"
+        case .custom: return "看你的服务 · OpenAI 兼容接口"
         }
     }
     var tag: String {
         switch self {
-        case .apple: return "免费"
-        case .siliconflow: return "免费"
+        case .apple, .siliconflow: return "免费"
         case .aliyun: return "推荐"
+        case .zhipu: return "新"
+        case .custom: return "进阶"
+        }
+    }
+    /// 可选模型
+    var models: [String] {
+        switch self {
+        case .apple: return []
+        case .siliconflow: return ["FunAudioLLM/SenseVoiceSmall", "TeleAI/TeleSpeechASR"]
+        case .aliyun: return ["qwen3-asr-flash"]
+        case .zhipu: return ["glm-asr"]
+        case .custom: return ["whisper-1"]
+        }
+    }
+    var modelKey: String? {
+        switch self {
+        case .apple: return nil
+        case .siliconflow: return SettingsKey.siliconModel
+        case .aliyun: return SettingsKey.aliyunModel
+        case .zhipu: return SettingsKey.zhipuASRModel
+        case .custom: return SettingsKey.customASRModel
         }
     }
     var keyName: KeyName? {
@@ -51,13 +73,16 @@ enum ASREngine: String, CaseIterable, Identifiable {
         case .apple: return nil
         case .siliconflow: return .siliconflow
         case .aliyun: return .aliyun
+        case .zhipu: return .zhipu
+        case .custom: return .asrCustom
         }
     }
     var keyURL: String {
         switch self {
-        case .apple: return ""
+        case .apple, .custom: return ""
         case .siliconflow: return "https://cloud.siliconflow.cn/account/ak"
         case .aliyun: return "https://bailian.console.aliyun.com/?tab=model#/api-key"
+        case .zhipu: return "https://open.bigmodel.cn/usercenter/apikeys"
         }
     }
 }
@@ -205,6 +230,9 @@ enum SettingsKey {
     static func fetchedModels(_ p: LLMProvider) -> String { "fetchedModels.\(p.rawValue)" }
     static func styleModel(_ s: OrganizeStyle) -> String { "styleModel.\(s.rawValue)" }
     static let siliconModel = "siliconASRModel"
+    static let zhipuASRModel = "zhipuASRModel"
+    static let customASRModel = "customASRModel"
+    static let customASRBase = "customASRBase"
     static let siliconLanguage = "siliconLanguage"
 }
 
@@ -256,6 +284,9 @@ enum AppConfig {
         nonEmpty(ud.string(forKey: SettingsKey.llmBaseURL(p)), p.defaultBaseURL)
     }
 
+    static var zhipuASRModel: String { nonEmpty(ud.string(forKey: SettingsKey.zhipuASRModel), "glm-asr") }
+    static var customASRModel: String { ud.string(forKey: SettingsKey.customASRModel) ?? "" }
+    static var customASRBase: String { ud.string(forKey: SettingsKey.customASRBase) ?? "" }
     static var siliconModel: String { nonEmpty(ud.string(forKey: SettingsKey.siliconModel), defaultSiliconModel) }
 
     static func hasKey(_ p: LLMProvider) -> Bool { Keychain.get(p.keyName) != nil }
@@ -302,7 +333,7 @@ enum AppConfig {
 }
 
 enum KeyName: String {
-    case aliyun, zhipu, deepseek, custom, doubao, kimi, minimax, siliconflow
+    case aliyun, zhipu, deepseek, custom, doubao, kimi, minimax, siliconflow, asrCustom
 }
 
 enum Keychain {

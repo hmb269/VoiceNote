@@ -575,7 +575,7 @@ struct ASRSettingsView: View {
                         Text("英语").tag("en-US")
                     }
                 } else {
-                    LabeledContent("识别语言", value: "自动（中/粤/英/日/韩）")
+                    LabeledContent("识别语言", value: "自动识别")
                 }
             }
 
@@ -599,15 +599,34 @@ struct ASRSettingsView: View {
         .onAppear { tick += 1 }
     }
 
+    private func asrIcon(_ e: ASREngine) -> String {
+        switch e {
+        case .apple: return "apple.logo"
+        case .aliyun: return "cloud.fill"
+        case .siliconflow: return "waveform.badge.mic"
+        case .zhipu: return "mic.fill"
+        case .custom: return "server.rack"
+        }
+    }
+
+    private func asrColor(_ e: ASREngine) -> Color {
+        switch e {
+        case .apple: return .black
+        case .aliyun: return .purple
+        case .siliconflow: return .indigo
+        case .zhipu: return .blue
+        case .custom: return .gray
+        }
+    }
+
     @ViewBuilder private func engineRow(_ e: ASREngine, current: Bool) -> some View {
         let hasKey = e.keyName.map { Keychain.get($0) != nil } ?? true
         let content = HStack(spacing: 14) {
-            Image(systemName: e == .apple ? "apple.logo" : (e == .aliyun ? "cloud.fill" : "waveform.badge.mic"))
+            Image(systemName: asrIcon(e))
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 42, height: 42)
-                .background((e == .apple ? Color.black : (e == .aliyun ? Color.purple : Color.indigo)).gradient,
-                            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(asrColor(e).gradient, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(e.title).font(.body.weight(.semibold))
@@ -618,7 +637,7 @@ struct ASRSettingsView: View {
                         .background(Color(.tertiarySystemFill), in: Capsule())
                 }
                 Text(e.modelLabel).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                Text(e.price).font(.caption).foregroundStyle(.secondary)
+                Text(e.price).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 if e.keyName != nil { KeyStatus(ok: hasKey) }
             }
             Spacer()
@@ -647,9 +666,10 @@ struct ASRProviderDetailView: View {
     let engine: ASREngine
     @Environment(\.openURL) private var openURL
     @AppStorage(SettingsKey.asrEngine) private var engineRaw = ASREngine.apple.rawValue
-    @AppStorage(SettingsKey.aliyunModel) private var aliyunModel = AppConfig.defaultAliyunModel
-    @AppStorage(SettingsKey.siliconModel) private var siliconModel = AppConfig.defaultSiliconModel
+    @AppStorage(SettingsKey.customASRBase) private var customBase = ""
     @State private var key = ""
+    @State private var model = ""
+    @State private var newModel = ""
     @State private var loaded = false
 
     var body: some View {
@@ -661,33 +681,74 @@ struct ASRProviderDetailView: View {
                     .onChange(of: key) { _, v in
                         if loaded, let k = engine.keyName { Keychain.set(v, for: k) }
                     }
-                Button {
-                    if let u = URL(string: engine.keyURL) { openURL(u) }
-                } label: {
-                    HStack {
-                        Label(key.isEmpty ? "还没有？去官网注册并获取 Key" : "去官网管理 Key", systemImage: "safari")
-                        Spacer()
-                        Image(systemName: "arrow.up.right").font(.caption.weight(.bold))
+                if !engine.keyURL.isEmpty {
+                    Button {
+                        if let u = URL(string: engine.keyURL) { openURL(u) }
+                    } label: {
+                        HStack {
+                            Label(key.isEmpty ? "还没有？去官网注册并获取 Key" : "去官网管理 Key", systemImage: "safari")
+                            Spacer()
+                            Image(systemName: "arrow.up.right").font(.caption.weight(.bold))
+                        }
                     }
                 }
             } header: {
                 Text("密钥")
             } footer: {
-                Text(engine == .aliyun
-                     ? "阿里云百炼的 Key 和「通义千问」整理共用，填一次两边都能用。"
-                     : "硅基流动新用户注册就能用，SenseVoice 模型免费。")
+                switch engine {
+                case .aliyun: Text("阿里云百炼的 Key 和「通义千问」整理共用，填一次两边都能用。")
+                case .zhipu: Text("和「智谱 GLM」整理共用同一个 Key。")
+                case .siliconflow: Text("硅基流动注册就能用，两个语音模型都免费。")
+                default: EmptyView()
+                }
             }
 
-            Section("模型") {
-                if engine == .aliyun {
-                    TextField("qwen3-asr-flash", text: $aliyunModel)
+            if engine == .custom {
+                Section {
+                    TextField("例如 https://api.groq.com/openai/v1", text: $customBase)
+                        .font(.footnote)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                } else {
-                    TextField("FunAudioLLM/SenseVoiceSmall", text: $siliconModel)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                } header: {
+                    Text("接口地址")
+                } footer: {
+                    Text("任何支持 OpenAI /audio/transcriptions 的服务都可以，包括自己 NAS 上跑的 Whisper。")
                 }
+            }
+
+            Section {
+                ForEach(models, id: \.self) { m in
+                    Button {
+                        pick(m)
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(m).foregroundStyle(.primary)
+                                if let note = note(m) {
+                                    Text(note).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            if m == model {
+                                Image(systemName: "checkmark").foregroundStyle(Theme.accent).fontWeight(.semibold)
+                            }
+                        }
+                    }
+                }
+                HStack {
+                    TextField("手动填模型名", text: $newModel)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Button("使用") {
+                        pick(newModel.trimmingCharacters(in: .whitespaces))
+                        newModel = ""
+                        hideKeyboard()
+                    }
+                    .disabled(newModel.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            } header: {
+                Text("模型")
             }
 
             Section {
@@ -697,7 +758,7 @@ struct ASRProviderDetailView: View {
                     Label(engineRaw == engine.rawValue ? "正在用这家转写" : "用这家转写",
                           systemImage: engineRaw == engine.rawValue ? "checkmark.circle.fill" : "circle")
                 }
-                .disabled(key.isEmpty)
+                .disabled(key.isEmpty || model.isEmpty || (engine == .custom && customBase.isEmpty))
             }
         }
         .keyboardDoneBar()
@@ -708,7 +769,32 @@ struct ASRProviderDetailView: View {
         .onAppear {
             loaded = false
             key = engine.keyName.flatMap { Keychain.get($0) } ?? ""
+            model = engine.modelKey.flatMap { UserDefaults.standard.string(forKey: $0) } ?? ""
+            if model.isEmpty { model = engine.models.first ?? "" }
             DispatchQueue.main.async { loaded = true }
+        }
+    }
+
+    private var models: [String] {
+        var list = engine.models
+        if !model.isEmpty && !list.contains(model) { list.append(model) }
+        return list
+    }
+
+    private func pick(_ m: String) {
+        guard !m.isEmpty, let k = engine.modelKey else { return }
+        model = m
+        UserDefaults.standard.set(m, forKey: k)
+    }
+
+    private func note(_ m: String) -> String? {
+        switch m {
+        case "FunAudioLLM/SenseVoiceSmall": return "普通话、粤语、英语，速度快"
+        case "TeleAI/TeleSpeechASR": return "中国电信星辰，对各地方言更友好"
+        case "qwen3-asr-flash": return "粤普混说、口音重的录音识别好"
+        case "glm-asr": return "智谱语音识别，每段最长约 30 秒，App 会自动切分"
+        case "whisper-1": return "OpenAI Whisper 的通用名"
+        default: return nil
         }
     }
 }
