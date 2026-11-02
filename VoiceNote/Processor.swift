@@ -109,6 +109,48 @@ final class Processor: ObservableObject {
         try? context?.save()
     }
 
+    // MARK: 取消
+
+    /// 每次转写/整理的令牌：取消或重开后，旧任务回来发现令牌不对就不再改数据
+    private var tokens: [UUID: UUID] = [:]
+    private var cancelers: [UUID: () -> Void] = [:]
+    private var summaryBackup: [UUID: String] = [:]
+
+    /// 跑一个可以随时取消的任务：点取消立刻返回，不用等底层（比如本机区分说话人）真的停下
+    private func cancellable<T>(_ id: UUID, _ op: @escaping @MainActor () async throws -> T) async throws -> T {
+        let race = Race<T>()
+        // 都在主线程：任务要等下面挂起后才会开始跑，所以 cont 一定先设好
+        let t = Task { @MainActor in
+            do { race.finish(.success(try await op())) } catch { race.finish(.failure(error)) }
+        }
+        cancelers[id] = {
+            t.cancel()
+            race.finish(.failure(CancellationError()))
+        }
+        return try await withCheckedThrowingContinuation { c in race.cont = c }
+    }
+
+    func cancel(_ rec: Recording) {
+        let id = rec.id
+        cancelers[id]?()
+        cancelers[id] = nil
+        tokens[id] = nil
+        busy.remove(id)
+        progress[id] = nil
+        stage[id] = nil
+        organizeInfo[id] = nil
+        UserDefaults.standard.removeObject(forKey: "resumeEngine-\(id)")
+        if rec.status == .transcribing {
+            rec.status = rec.hasSpeech ? .done : .idle
+        } else if rec.status == .organizing {
+            if let old = summaryBackup[id] { rec.summary = old }
+            rec.status = .done
+        }
+        summaryBackup[id] = nil
+        save()
+        showToast("已取消")
+    }
+
     private func enqueue(_ work: @escaping @MainActor () async -> Void) {
         let previous = chain
         chain = Task { @MainActor in
@@ -267,11 +309,17 @@ final class Processor: ObservableObject {
         guard !busy.contains(id) else { return }
         busy.insert(id)
         progress[id] = 0
+        let token = UUID()
+        tokens[id] = token
         let bgTask = BGTaskBox.begin("transcribe")
         defer {
-            busy.remove(id)
-            progress[id] = nil
             bgTask.end()
+            if tokens[id] == token {
+                busy.remove(id)
+                progress[id] = nil
+                tokens[id] = nil
+                cancelers[id] = nil
+            }
         }
 
         rec.status = .transcribing
@@ -279,7 +327,7 @@ final class Processor: ObservableObject {
         save()
         // 记下正在用的引擎：App 中途被系统关掉，下次打开从断点接着转
         UserDefaults.standard.set(engine.rawValue, forKey: "resumeEngine-\(id)")
-        defer { UserDefaults.standard.removeObject(forKey: "resumeEngine-\(id)") }
+        defer { if tokens[id] == token { UserDefaults.standard.removeObject(forKey: "resumeEngine-\(id)") } }
 
         var url = rec.fileURL
         // 以前导入的、系统读不了的格式，转写前先转成 m4a
@@ -303,19 +351,24 @@ final class Processor: ObservableObject {
             Task { @MainActor in Processor.shared.progress[id] = p }
         }
         do {
-            let segs = try await Transcription.run(url, engine: engine, progress: report) { segs in
-                // 文字先存下来，区分说话人慢或失败都不影响
-                rec.segments = segs
-                rec.engineUsed = engine.shortLabel
-                self.stage[id] = "正在区分说话人"
-                self.save()
+            let segs = try await cancellable(id) {
+                try await Transcription.run(url, engine: engine, progress: report) { segs in
+                    guard self.tokens[id] == token else { return }
+                    // 文字先存下来，区分说话人慢或失败都不影响
+                    rec.segments = segs
+                    rec.engineUsed = engine.shortLabel
+                    self.stage[id] = "正在区分说话人"
+                    self.save()
+                }
             }
+            guard tokens[id] == token else { return }
             stage[id] = nil
             rec.segments = segs
             ChunkCache.clear(url)
             rec.engineUsed = engine.shortLabel
             rec.status = .done
         } catch {
+            guard tokens[id] == token else { return }
             stage[id] = nil
             rec.status = .failed
             rec.errorMessage = "转写失败：\(error.localizedDescription)"
@@ -358,24 +411,32 @@ final class Processor: ObservableObject {
             return
         }
         busy.insert(id)
+        let token = UUID()
+        tokens[id] = token
         let bgTask = BGTaskBox.begin("organize")
         defer {
-            busy.remove(id)
             bgTask.end()
+            if tokens[id] == token {
+                busy.remove(id)
+                tokens[id] = nil
+                cancelers[id] = nil
+                summaryBackup[id] = nil
+            }
         }
 
         rec.status = .organizing
         rec.errorMessage = ""
         save()
         let oldSummary = rec.summary
+        summaryBackup[id] = oldSummary
         organizeInfo[id] = "正在连接 \(modelName)…"
-        defer { organizeInfo[id] = nil }
+        defer { if tokens[id] == token { organizeInfo[id] = nil } }
 
         let box = StreamBox()
         let onProgress: (String, Int) -> Void = { text, thinking in
             Task { @MainActor in
                 let p = Processor.shared
-                guard !box.finished, Date().timeIntervalSince(box.lastUI) > 0.5 else { return }
+                guard !box.finished, p.tokens[id] == token, Date().timeIntervalSince(box.lastUI) > 0.5 else { return }
                 box.lastUI = Date()
                 if text.isEmpty {
                     p.organizeInfo[id] = thinking > 0 ? "模型还在内部思考（已想 \(thinking) 字，不算结果）…" : "等待模型回复…"
@@ -387,15 +448,17 @@ final class Processor: ObservableObject {
         }
 
         do {
-            let md = try await Organizer.organize(transcript: rec.transcript,
-                                                  segments: rec.segments,
+            let transcript = rec.transcript, segments = rec.segments
+            let md = try await cancellable(id) { try await Organizer.organize(transcript: transcript,
+                                                  segments: segments,
                                                   provider: provider,
                                                   apiKey: key,
                                                   baseURL: AppConfig.llmBaseURL(provider),
                                                   model: modelName,
                                                   style: style,
-                                                  onProgress: onProgress)
+                                                  onProgress: onProgress) }
             box.finished = true
+            guard tokens[id] == token else { return }
             rec.summary = md
             rec.organizedModel = modelName
             rec.organizedStyle = style.rawValue
@@ -406,6 +469,7 @@ final class Processor: ObservableObject {
             rec.status = .done
         } catch {
             box.finished = true
+            guard tokens[id] == token else { return }
             rec.summary = oldSummary
             rec.status = .failed
             rec.errorMessage = "整理失败：\(error.localizedDescription)"
@@ -429,5 +493,14 @@ final class BGTaskBox {
         guard id != .invalid else { return }
         UIApplication.shared.endBackgroundTask(id)
         id = .invalid
+    }
+}
+
+/// 谁先到用谁：任务完成或用户点取消（只在主线程上用）
+final class Race<T>: @unchecked Sendable {
+    var cont: CheckedContinuation<T, Error>?
+    func finish(_ r: Result<T, Error>) {
+        cont?.resume(with: r)
+        cont = nil
     }
 }

@@ -244,6 +244,7 @@ struct RecordingDetailView: View {
                     Text("\(Int(p * 100))%")
                         .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
+                    cancelButton
                 }
                 ProgressView(value: p).tint(Theme.accent)
                 Text(processor.stage[rec.id] == nil ? "可以先去做别的，转完会自动保存" : "文字已经转好并保存了，正在本机分辨谁在说话，录音长的话要几分钟")
@@ -263,6 +264,7 @@ struct RecordingDetailView: View {
                         .contentTransition(.numericText())
                 }
                 Spacer()
+                cancelButton
             }
             .padding(16)
             .cardBackground()
@@ -279,6 +281,21 @@ struct RecordingDetailView: View {
             .padding(14)
             .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
+    }
+
+    private var cancelButton: some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            processor.cancel(rec)
+        } label: {
+            Text("取消")
+                .font(.footnote.weight(.semibold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.primary.opacity(0.07), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 6)
     }
 
     /// 这条录音上次用的转写方式；没转写过就是设置里的默认
