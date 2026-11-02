@@ -73,7 +73,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.hmb269.voicenote
-        WKBackgroundModes:
+        UIBackgroundModes:
           - audio
         NSMicrophoneUsageDescription: 录音需要使用麦克风
     settings:
