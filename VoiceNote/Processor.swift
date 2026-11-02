@@ -211,14 +211,25 @@ final class Processor: ObservableObject {
     func resumePending() {
         guard let context else { return }
         let all = (try? context.fetch(FetchDescriptor<Recording>())) ?? []
+        var toResume: [(Recording, ASREngine)] = []
         for rec in all where !busy.contains(rec.id) {
+            if rec.status == .transcribing,
+               let raw = UserDefaults.standard.string(forKey: "resumeEngine-\(rec.id)"),
+               let engine = ASREngine(rawValue: raw) {
+                toResume.append((rec, engine))
+            }
             if rec.status == .transcribing || rec.status == .organizing {
                 rec.status = rec.transcript.isEmpty ? .idle : .done
             }
         }
         save()
+        for (rec, engine) in toResume {
+            rec.status = .transcribing
+            enqueue { await self.transcribe(rec, engine: engine) }
+        }
+        let resuming = Set(toResume.map { $0.0.id })
         guard AppConfig.autoTranscribe else { return }
-        for rec in all where rec.autoPending && rec.transcript.isEmpty && !busy.contains(rec.id) {
+        for rec in all where rec.autoPending && !resuming.contains(rec.id) && rec.transcript.isEmpty && !busy.contains(rec.id) {
             enqueue { await self.autoProcess(rec) }
         }
     }
@@ -264,6 +275,9 @@ final class Processor: ObservableObject {
         rec.status = .transcribing
         rec.errorMessage = ""
         save()
+        // 记下正在用的引擎：App 中途被系统关掉，下次打开从断点接着转
+        UserDefaults.standard.set(engine.rawValue, forKey: "resumeEngine-\(id)")
+        defer { UserDefaults.standard.removeObject(forKey: "resumeEngine-\(id)") }
 
         var url = rec.fileURL
         // 以前导入的、系统读不了的格式，转写前先转成 m4a
@@ -289,6 +303,7 @@ final class Processor: ObservableObject {
         do {
             let segs = try await Transcription.run(url, engine: engine, progress: report)
             rec.segments = segs
+            ChunkCache.clear(url)
             rec.engineUsed = engine.shortLabel
             rec.status = .done
         } catch {

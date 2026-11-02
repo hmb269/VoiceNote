@@ -30,7 +30,7 @@ final class BackgroundKeeper {
         if player == nil {
             player = try? AVAudioPlayer(data: Self.silentWav())
             player?.numberOfLoops = -1
-            player?.volume = 0
+            player?.volume = 1   // 数据本身全是 0，听不到声音
         }
         player?.play()
     }

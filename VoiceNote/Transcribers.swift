@@ -221,9 +221,16 @@ enum AliyunTranscriber {
         let chunks = try AudioTools.splitToWav(url: url, chunkSeconds: 30)
         defer { AudioTools.cleanup(chunks) }
 
+        let ck = ChunkCache.key(url, "aliyun-\(model)-\(language)-30")
+        var cached = ChunkCache.load(ck)
         var all: [TranscriptSegment] = []
         for (i, chunk) in chunks.enumerated() {
             try Task.checkCancellation()
+            if let c = cached[i] {
+                all += c
+                progress(Double(i + 1) / Double(chunks.count))
+                continue
+            }
             let data = try Data(contentsOf: chunk.url)
             let dataURI = "data:audio/wav;base64," + data.base64EncodedString()
             var asrOptions: [String: Any] = ["enable_itn": true]
@@ -240,8 +247,11 @@ enum AliyunTranscriber {
                 "stream": false,
                 "asr_options": asrOptions,
             ]
-            let text = try await OpenAIClient.chat(baseURL: baseURL, apiKey: apiKey, body: body, timeout: 120)
-            all += SegmentTools.splitEvenly(text, start: chunk.start, duration: chunk.duration)
+            let text = try await ChunkCache.retry { try await OpenAIClient.chat(baseURL: baseURL, apiKey: apiKey, body: body, timeout: 120) }
+            let segs = SegmentTools.splitEvenly(text, start: chunk.start, duration: chunk.duration)
+            all += segs
+            cached[i] = segs
+            ChunkCache.save(ck, cached)
             progress(Double(i + 1) / Double(chunks.count))
         }
         return all
@@ -262,9 +272,16 @@ enum FileTranscriber {
         let chunks = try AudioTools.splitToWav(url: url, chunkSeconds: chunkSeconds)
         defer { AudioTools.cleanup(chunks) }
 
+        let ck = ChunkCache.key(url, "\(name)-\(model)-\(Int(chunkSeconds))")
+        var cached = ChunkCache.load(ck)
         var all: [TranscriptSegment] = []
         for (i, chunk) in chunks.enumerated() {
             try Task.checkCancellation()
+            if let c = cached[i] {
+                all += c
+                progress(Double(i + 1) / Double(chunks.count))
+                continue
+            }
             let boundary = "VN-\(UUID().uuidString)"
             var body = Data()
             func field(_ k: String, _ v: String) {
@@ -283,7 +300,7 @@ enum FileTranscriber {
             req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             req.httpBody = body
 
-            let (data, resp) = try await URLSession.shared.data(for: req)
+            let (data, resp) = try await ChunkCache.retry { try await URLSession.shared.data(for: req) }
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             var text: String?
@@ -301,7 +318,10 @@ enum FileTranscriber {
             // SenseVoice 会带 <|zh|><|NEUTRAL|> 这类标签
             t = t.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
             t = WhisperFilter.clean(t)
-            all += SegmentTools.splitEvenly(t, start: chunk.start, duration: chunk.duration)
+            let segs = SegmentTools.splitEvenly(t, start: chunk.start, duration: chunk.duration)
+            all += segs
+            cached[i] = segs
+            ChunkCache.save(ck, cached)
             progress(Double(i + 1) / Double(chunks.count))
         }
         return all
@@ -757,5 +777,56 @@ enum Organizer {
 
     static func isPlaceholder(_ t: String) -> Bool {
         t.contains("不超过") || t.contains("个字") || t == "标题" || t == "会议主题" || t.hasPrefix("标题（")
+    }
+}
+
+/// 云端分段转写的断点：每段转完就存，App 被系统关掉后从断点继续
+enum ChunkCache {
+    private static var dir: URL {
+        let d = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("asr-progress", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    static func key(_ url: URL, _ tag: String) -> String {
+        let safe = tag.map { $0.isLetter || $0.isNumber || $0 == "-" ? $0 : "_" }
+        return url.lastPathComponent + "--" + String(safe)
+    }
+
+    static func load(_ key: String) -> [Int: [TranscriptSegment]] {
+        guard let d = try? Data(contentsOf: dir.appendingPathComponent(key + ".json")),
+              let m = try? JSONDecoder().decode([String: [TranscriptSegment]].self, from: d) else { return [:] }
+        return Dictionary(uniqueKeysWithValues: m.compactMap { k, v in Int(k).map { ($0, v) } })
+    }
+
+    static func save(_ key: String, _ map: [Int: [TranscriptSegment]]) {
+        let m = Dictionary(uniqueKeysWithValues: map.map { (String($0.key), $0.value) })
+        if let d = try? JSONEncoder().encode(m) {
+            try? d.write(to: dir.appendingPathComponent(key + ".json"), options: .atomic)
+        }
+    }
+
+    /// 转写成功后清掉这条录音的断点
+    static func clear(_ url: URL) {
+        let prefix = url.lastPathComponent + "--"
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        for f in files where f.hasPrefix(prefix) {
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(f))
+        }
+    }
+
+    /// 网络抖一下（比如切后台、锁屏）自动重试，最多 3 次
+    static func retry<T>(_ work: () async throws -> T) async throws -> T {
+        var last: Error?
+        for attempt in 0..<3 {
+            do { return try await work() } catch {
+                if error is CancellationError { throw error }
+                if let e = error as? VNError, !e.message.contains("HTTP 5"), !e.message.contains("HTTP 429") { throw error }
+                last = error
+                try await Task.sleep(nanoseconds: UInt64(2 + attempt * 3) * 1_000_000_000)
+            }
+        }
+        throw last!
     }
 }
