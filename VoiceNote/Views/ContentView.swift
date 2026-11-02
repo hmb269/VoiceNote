@@ -48,16 +48,18 @@ struct ContentView: View {
             Tab("收藏", systemImage: "star.fill", value: RootTab.favorites) {
                 FavoritesView()
             }
-            Tab(recorder.isRecording ? formatDuration(recorder.elapsed) : "录音",
-                systemImage: recorder.isRecording ? "stop.circle.fill" : "mic.circle.fill",
-                value: RootTab.record) {
-                Color.clear
+            Tab("搜索", systemImage: "magnifyingglass", value: RootTab.search) {
+                SearchView { withAnimation { tab = lastTab } }
             }
             Tab("设置", systemImage: "gearshape.fill", value: RootTab.settings) {
                 SettingsView(showDone: false)
             }
-            Tab(value: RootTab.search, role: .search) {
-                SearchView { withAnimation { tab = lastTab } }
+            // 录音放在右边单独的圆键里，不容易误触
+            Tab(recorder.isRecording ? formatDuration(recorder.elapsed) : "录音",
+                systemImage: recorder.isRecording ? "stop.fill" : "mic.fill",
+                value: RootTab.record,
+                role: .search) {
+                Color.clear
             }
         }
         .overlay(alignment: .bottom) {
