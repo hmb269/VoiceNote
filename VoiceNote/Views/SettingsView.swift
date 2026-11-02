@@ -553,6 +553,8 @@ struct ASRSettingsView: View {
     @AppStorage(SettingsKey.asrEngine) private var engineRaw = ASREngine.apple.rawValue
     @AppStorage(SettingsKey.appleLocale) private var appleLocale = "zh-CN"
     @AppStorage(SettingsKey.aliyunLanguage) private var aliyunLanguage = "auto"
+    @AppStorage(SettingsKey.diarize) private var diarize = false
+    @AppStorage(SettingsKey.speakerCount) private var speakerCount = 0
     @State private var tick = 0
 
     private var engine: ASREngine { ASREngine(rawValue: engineRaw) ?? .apple }
@@ -584,6 +586,28 @@ struct ASRSettingsView: View {
             }
 
             Section {
+                Toggle(isOn: $diarize) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("区分说话人")
+                        Text(ModelPackage.diarization.isReady ? "本地声纹识别，任何转写方式都能用" : "需要先下载约 \(ModelPackage.diarization.approxMB) MB 的小模型")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(!ModelPackage.diarization.isReady)
+                if diarize {
+                    Picker("说话人数", selection: $speakerCount) {
+                        Text("自动判断").tag(0)
+                        ForEach(2...6, id: \.self) { Text("\($0) 人").tag($0) }
+                    }
+                }
+                if !ModelPackage.diarization.isReady {
+                    NavigationLink("去下载区分说话人模型") { LocalModelsView() }
+                }
+            } footer: {
+                Text("打开后，原文每句会标上「说话人1 / 说话人2」，AI 整理会议纪要时就知道谁说了什么。知道人数时选上会更准。")
+            }
+
+            Section {
                 ForEach(ASREngine.allCases.filter { $0 != engine }) { e in
                     engineRow(e, current: false)
                 }
@@ -603,6 +627,7 @@ struct ASRSettingsView: View {
         switch e {
         case .apple: return "apple.logo"
         case .local: return "cpu"
+        case .localQwen: return "cpu.fill"
         case .groq: return "bolt.fill"
         case .aliyun: return "cloud.fill"
         case .siliconflow: return "waveform.badge.mic"
@@ -615,6 +640,7 @@ struct ASRSettingsView: View {
         switch e {
         case .apple: return .black
         case .local: return .teal
+        case .localQwen: return Color(red: 0.45, green: 0.30, blue: 0.95)
         case .groq: return .orange
         case .aliyun: return .purple
         case .siliconflow: return .indigo
@@ -624,7 +650,7 @@ struct ASRSettingsView: View {
     }
 
     @ViewBuilder private func engineRow(_ e: ASREngine, current: Bool) -> some View {
-        let hasKey = e == .local ? LocalModels.isReady : (e.keyName.map { Keychain.get($0) != nil } ?? true)
+        let hasKey = e.localPackage.map { $0.isReady } ?? (e.keyName.map { Keychain.get($0) != nil } ?? true)
         let content = HStack(spacing: 14) {
             Image(systemName: asrIcon(e))
                 .font(.system(size: 20, weight: .semibold))
@@ -643,7 +669,7 @@ struct ASRSettingsView: View {
                 Text(e.modelLabel).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Text(e.price).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 if e.keyName != nil { KeyStatus(ok: hasKey) }
-                if e == .local && !hasKey {
+                if e.localPackage != nil && !hasKey {
                     Label("点进去下载模型", systemImage: "arrow.down.circle")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(Theme.accent)
@@ -661,9 +687,9 @@ struct ASRSettingsView: View {
         }
         .padding(.vertical, 4)
 
-        if e == .local {
+        if e.localPackage != nil {
             NavigationLink {
-                LocalModelView()
+                LocalModelsView()
             } label: { content }
         } else if e.keyName != nil {
             NavigationLink {
@@ -712,7 +738,7 @@ struct ASRProviderDetailView: View {
                 case .aliyun: Text("阿里云百炼的 Key 和「通义千问」整理共用，填一次两边都能用。")
                 case .zhipu: Text("和「智谱 GLM」整理共用同一个 Key。")
                 case .siliconflow: Text("硅基流动注册就能用，两个语音模型都免费。")
-                case .groq: Text("Groq 需要海外网络才能注册和调用，录音会上传到美国服务器。已自动设成简体中文并加标点，还会过滤静音处的「幻听」句子。")
+                case .groq: Text("Groq 不对中国大陆和香港开放：打开官网要走代理，并且节点要选美国、日本、新加坡等地区（香港节点也会显示 Access denied）。代理规则里给 groq.com 走代理，App 转写时也会用到。已自动设成简体中文并加标点，还会过滤静音处的「幻听」句子。")
                 default: EmptyView()
                 }
             }
@@ -817,73 +843,92 @@ struct ASRProviderDetailView: View {
 
 // MARK: - 本地模型下载
 
-struct LocalModelView: View {
+struct LocalModelsView: View {
     @ObservedObject private var dl = ModelDownloader.shared
     @AppStorage(SettingsKey.asrEngine) private var engineRaw = ASREngine.apple.rawValue
-    @State private var confirmDelete = false
+    @AppStorage(SettingsKey.diarize) private var diarize = false
+    @State private var toDelete: ModelPackage?
 
     var body: some View {
         Form {
             Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("本地 SenseVoice").font(.title3.weight(.bold))
-                    Text("阿里开源的语音识别模型，下载到手机里离线运行：免费、不用网络、录音不出手机。普通话、粤语、英语、日语、韩语都能识别，几分钟的录音十几秒转完。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 4)
+                Text("下载到手机里离线运行：免费、不用网络、录音不出手机。建议连 Wi-Fi 下载，会依次试 ModelScope、hf-mirror、HuggingFace 和 GitHub，断了会自动续传。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
-
-            Section {
-                if dl.ready {
-                    Label("模型已下载（约 \(LocalModels.totalMB) MB）", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Button {
-                        engineRaw = ASREngine.local.rawValue
-                    } label: {
-                        Label(engineRaw == ASREngine.local.rawValue ? "正在用本地转写" : "用本地转写",
-                              systemImage: engineRaw == ASREngine.local.rawValue ? "checkmark.circle.fill" : "circle")
+            packageSection(.senseVoice,
+                           desc: "阿里开源。普通话、粤语、英语、日语、韩语，速度很快，几分钟的录音十几秒转完。推荐先下这个。",
+                           engine: .local)
+            packageSection(.qwen3,
+                           desc: "通义千问开源的 0.6B 语音模型。方言、口音、粤普混说更强，但更大更慢，适合听不准的录音。",
+                           engine: .localQwen)
+            packageSection(.diarization,
+                           desc: "声纹识别，把录音分成「说话人1 / 说话人2」。和任何转写方式都能搭配。",
+                           engine: nil)
+        }
+        .navigationTitle("本地模型")
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("删除这个模型？", isPresented: Binding(
+            get: { toDelete != nil }, set: { if !$0 { toDelete = nil } }
+        ), titleVisibility: .visible) {
+            Button("删除", role: .destructive) {
+                if let p = toDelete {
+                    dl.delete(p)
+                    if let e = ASREngine.allCases.first(where: { $0.localPackage == p }), engineRaw == e.rawValue {
+                        engineRaw = ASREngine.apple.rawValue
                     }
-                    Button(role: .destructive) { confirmDelete = true } label: {
-                        Label("删除模型，释放空间", systemImage: "trash")
-                    }
-                } else if dl.downloading {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ProgressView(value: dl.progress)
-                            .tint(Theme.accent)
-                        HStack {
-                            Text(dl.status).font(.caption).foregroundStyle(.secondary)
-                            Spacer()
-                            Text("\(Int(dl.progress * 100))%").font(.caption.monospacedDigit())
-                        }
-                    }
-                    Button("取消下载", role: .cancel) { dl.cancel() }
-                } else {
-                    Button {
-                        dl.start()
-                    } label: {
-                        Label("下载模型（约 \(LocalModels.totalMB) MB）", systemImage: "arrow.down.circle.fill")
-                            .font(.body.weight(.semibold))
-                    }
-                    if let e = dl.error {
-                        Text(e).font(.footnote).foregroundStyle(.red)
-                    }
+                    if p == .diarization { diarize = false }
                 }
-            } header: {
-                Text("模型")
-            } footer: {
-                Text("建议连 Wi-Fi 下载。默认从国内镜像下载，失败会自动换别的地址。下载一次以后都能离线用。")
             }
         }
-        .navigationTitle("本地 SenseVoice")
-        .navigationBarTitleDisplayMode(.inline)
-        .confirmationDialog("删除本地模型？", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("删除", role: .destructive) {
-                dl.delete()
-                if engineRaw == ASREngine.local.rawValue { engineRaw = ASREngine.apple.rawValue }
+    }
+
+    @ViewBuilder private func packageSection(_ p: ModelPackage, desc: String, engine: ASREngine?) -> some View {
+        Section {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(p.title).font(.headline)
+                Text(desc).font(.footnote).foregroundStyle(.secondary)
             }
-        } message: {
-            Text("删除后本地转写不能用，需要时可以重新下载。")
+            .padding(.vertical, 2)
+
+            if dl.isReady(p) {
+                Label("已下载（约 \(p.approxMB) MB）", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                if let engine {
+                    Button {
+                        engineRaw = engine.rawValue
+                    } label: {
+                        Label(engineRaw == engine.rawValue ? "正在用它转写" : "用它转写",
+                              systemImage: engineRaw == engine.rawValue ? "checkmark.circle.fill" : "circle")
+                    }
+                } else {
+                    Toggle("转写后区分说话人", isOn: $diarize)
+                }
+                Button(role: .destructive) { toDelete = p } label: {
+                    Label("删除，释放空间", systemImage: "trash")
+                }
+            } else if dl.active == p {
+                VStack(alignment: .leading, spacing: 8) {
+                    ProgressView(value: dl.progress).tint(Theme.accent)
+                    HStack {
+                        Text(dl.status).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        Spacer()
+                        Text("\(Int(dl.progress * 100))%").font(.caption.monospacedDigit())
+                    }
+                }
+                Button("取消下载", role: .cancel) { dl.cancel() }
+            } else {
+                Button {
+                    dl.start(p)
+                } label: {
+                    Label("下载（约 \(p.approxMB) MB）", systemImage: "arrow.down.circle.fill")
+                        .font(.body.weight(.semibold))
+                }
+                .disabled(dl.active != nil)
+                if let e = dl.error[p] {
+                    Text(e).font(.footnote).foregroundStyle(.red)
+                }
+            }
         }
     }
 }

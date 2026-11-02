@@ -124,6 +124,7 @@ struct TranscriptSegment: Codable, Identifiable, Hashable {
     var start: Double
     var end: Double
     var text: String
+    var speaker: Int? = nil
 
     func contains(_ t: Double) -> Bool { t >= start && t < end }
 }

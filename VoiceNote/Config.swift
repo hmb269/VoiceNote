@@ -2,13 +2,14 @@ import Foundation
 import Security
 
 enum ASREngine: String, CaseIterable, Identifiable {
-    case apple, local, siliconflow, groq, aliyun, zhipu, custom
+    case apple, local, localQwen, siliconflow, groq, aliyun, zhipu, custom
     var id: String { rawValue }
     var label: String { "\(title)（\(price.components(separatedBy: " · ").first ?? "")）" }
     var shortLabel: String {
         switch self {
         case .apple: return "苹果本机"
         case .local: return "本地 SenseVoice"
+        case .localQwen: return "本地 Qwen3"
         case .groq: return "Groq"
         case .siliconflow: return "硅基流动"
         case .aliyun: return "阿里云"
@@ -20,6 +21,7 @@ enum ASREngine: String, CaseIterable, Identifiable {
         switch self {
         case .apple: return "苹果自带转写"
         case .local: return "本地 SenseVoice"
+        case .localQwen: return "本地 Qwen3-ASR"
         case .groq: return "Groq Whisper"
         case .siliconflow: return "硅基流动"
         case .aliyun: return "阿里云百炼"
@@ -30,7 +32,8 @@ enum ASREngine: String, CaseIterable, Identifiable {
     var modelLabel: String {
         switch self {
         case .apple: return "系统语音识别，在手机上完成"
-        case .local: return LocalModels.isReady ? "已下载，离线可用" : "需要先下载模型（约 \(LocalModels.totalMB) MB）"
+        case .local: return ModelPackage.senseVoice.isReady ? "已下载，离线可用" : "需要先下载模型（约 \(ModelPackage.senseVoice.approxMB) MB）"
+        case .localQwen: return ModelPackage.qwen3.isReady ? "已下载，离线可用" : "需要先下载模型（约 \(ModelPackage.qwen3.approxMB) MB）"
         case .groq: return AppConfig.groqModel
         case .siliconflow: return AppConfig.siliconModel
         case .aliyun: return AppConfig.aliyunModel
@@ -41,7 +44,8 @@ enum ASREngine: String, CaseIterable, Identifiable {
     var price: String {
         switch self {
         case .apple: return "免费 · 不用网络也能转"
-        case .local: return "免费 · 离线 · 普通话粤语都准 · 不上传录音"
+        case .local: return "免费 · 离线 · 快 · 普通话粤语都准"
+        case .localQwen: return "免费 · 离线 · 方言口音更强 · 较慢"
         case .groq: return "免费额度 · 极快 · 需要海外网络 · 普通话为主"
         case .siliconflow: return "免费 · 云端 · SenseVoice 懂粤语，TeleSpeech 懂方言"
         case .aliyun: return "约 0.12 元/小时 · 粤普混说最准"
@@ -52,7 +56,7 @@ enum ASREngine: String, CaseIterable, Identifiable {
     var tag: String {
         switch self {
         case .apple, .siliconflow: return "免费"
-        case .local: return "离线"
+        case .local, .localQwen: return "离线"
         case .groq: return "极快"
         case .aliyun: return "推荐"
         case .zhipu: return "新"
@@ -62,7 +66,7 @@ enum ASREngine: String, CaseIterable, Identifiable {
     /// 可选模型
     var models: [String] {
         switch self {
-        case .apple, .local: return []
+        case .apple, .local, .localQwen: return []
         case .groq: return ["whisper-large-v3", "whisper-large-v3-turbo"]
         case .siliconflow: return ["FunAudioLLM/SenseVoiceSmall", "TeleAI/TeleSpeechASR"]
         case .aliyun: return ["qwen3-asr-flash"]
@@ -72,7 +76,7 @@ enum ASREngine: String, CaseIterable, Identifiable {
     }
     var modelKey: String? {
         switch self {
-        case .apple, .local: return nil
+        case .apple, .local, .localQwen: return nil
         case .groq: return SettingsKey.groqModel
         case .siliconflow: return SettingsKey.siliconModel
         case .aliyun: return SettingsKey.aliyunModel
@@ -82,7 +86,7 @@ enum ASREngine: String, CaseIterable, Identifiable {
     }
     var keyName: KeyName? {
         switch self {
-        case .apple, .local: return nil
+        case .apple, .local, .localQwen: return nil
         case .groq: return .groq
         case .siliconflow: return .siliconflow
         case .aliyun: return .aliyun
@@ -92,11 +96,21 @@ enum ASREngine: String, CaseIterable, Identifiable {
     }
     var keyURL: String {
         switch self {
-        case .apple, .local, .custom: return ""
+        case .apple, .local, .localQwen, .custom: return ""
         case .groq: return "https://console.groq.com/keys"
         case .siliconflow: return "https://cloud.siliconflow.cn/account/ak"
         case .aliyun: return "https://bailian.console.aliyun.com/?tab=model#/api-key"
         case .zhipu: return "https://open.bigmodel.cn/usercenter/apikeys"
+        }
+    }
+}
+
+extension ASREngine {
+    var localPackage: ModelPackage? {
+        switch self {
+        case .local: return .senseVoice
+        case .localQwen: return .qwen3
+        default: return nil
         }
     }
 }
@@ -246,6 +260,8 @@ enum SettingsKey {
     static let siliconModel = "siliconASRModel"
     static let zhipuASRModel = "zhipuASRModel"
     static let groqModel = "groqASRModel"
+    static let diarize = "diarize"
+    static let speakerCount = "speakerCount"
     static let customASRModel = "customASRModel"
     static let customASRBase = "customASRBase"
     static let siliconLanguage = "siliconLanguage"
@@ -299,6 +315,8 @@ enum AppConfig {
         nonEmpty(ud.string(forKey: SettingsKey.llmBaseURL(p)), p.defaultBaseURL)
     }
 
+    static var diarize: Bool { ud.bool(forKey: SettingsKey.diarize) }
+    static var speakerCount: Int { ud.integer(forKey: SettingsKey.speakerCount) }
     static var groqModel: String { nonEmpty(ud.string(forKey: SettingsKey.groqModel), "whisper-large-v3") }
     static var zhipuASRModel: String { nonEmpty(ud.string(forKey: SettingsKey.zhipuASRModel), "glm-asr") }
     static var customASRModel: String { ud.string(forKey: SettingsKey.customASRModel) ?? "" }

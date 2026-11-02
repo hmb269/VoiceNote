@@ -649,10 +649,21 @@ struct RecordingDetailView: View {
                 let active = seg.id == activeID
                 let marked = isMarked(seg.text)
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(formatDuration(seg.start))
-                        .font(.caption.monospacedDigit().weight(.medium))
-                        .foregroundStyle(active ? Theme.accent : Color.secondary)
-                        .frame(width: 42, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(formatDuration(seg.start))
+                            .font(.caption.monospacedDigit().weight(.medium))
+                            .foregroundStyle(active ? Theme.accent : Color.secondary)
+                        if let sp = seg.speaker {
+                            Text("说话人\(sp)")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Theme.speakerColors[(sp - 1) % Theme.speakerColors.count], in: Capsule())
+                                .fixedSize()
+                        }
+                    }
+                    .frame(width: 46, alignment: .leading)
                     Text(seg.text)
                         .lineSpacing(4)
                         .foregroundStyle(active ? Color.primary : Color.primary.opacity(0.88))

@@ -327,6 +327,14 @@ enum WhisperFilter {
 /// 根据设置里选的转写方式调用对应的服务
 enum Transcription {
     static func run(_ url: URL, engine: ASREngine, progress: @escaping (Double) -> Void) async throws -> [TranscriptSegment] {
+        let segs = try await recognize(url, engine: engine) { progress($0 * (AppConfig.diarize ? 0.85 : 1)) }
+        guard AppConfig.diarize, ModelPackage.diarization.isReady else { return segs }
+        let labeled = (try? await Diarizer.label(segs, url: url, speakers: AppConfig.speakerCount)) ?? segs
+        progress(1)
+        return labeled
+    }
+
+    private static func recognize(_ url: URL, engine: ASREngine, progress: @escaping (Double) -> Void) async throws -> [TranscriptSegment] {
         func key(_ k: KeyName) throws -> String {
             guard let v = Keychain.get(k) else {
                 throw VNError("还没填\(engine.title)的 API Key，到 设置 → 语音转文字 里填")
@@ -337,7 +345,9 @@ enum Transcription {
         case .apple:
             return try await AppleTranscriber.transcribe(url: url, localeID: AppConfig.appleLocale, progress: progress)
         case .local:
-            return try await LocalSenseVoice.transcribe(url: url, progress: progress)
+            return try await LocalRecognizer.transcribe(url: url, package: .senseVoice, progress: progress)
+        case .localQwen:
+            return try await LocalRecognizer.transcribe(url: url, package: .qwen3, progress: progress)
         case .groq:
             return try await FileTranscriber.transcribe(
                 url: url, endpoint: "https://api.groq.com/openai/v1",
@@ -502,6 +512,11 @@ enum Organizer {
     根据上下文修正明显的同音错字和专有名词，不要编造原文没有的内容。只输出下面格式的 Markdown，不要多余的解释。
     """
 
+    private static let speakerRule = """
+    关于说话人：如果原文每句前面有「说话人1：」「说话人2：」，这是声纹识别分出来的不同的人（同一个编号就是同一个人，但偶尔会分错）。
+    整理时用这个编号区分发言人，能从内容判断身份的写成「说话人1（医生）：」，判断不出就保留「说话人1：」。不要再用甲乙。
+    """
+
     private static let timeRule = """
     关于时间标记：如果原文每行开头有 [起-止]（单位是秒），说明这句在录音里的位置。
     - 列表里的每一条（要点、决议、待办、议题下的观点等）结尾写上 {起-止}，指向原文里出处的那几句，例如：- 下周三前交方案 {42.0-51.5}
@@ -613,7 +628,7 @@ enum Organizer {
             整理成通顺的讲稿：去掉口头禅和重复，补标点，按主题分段。
             """
         }
-        return common + "\n\n" + format + "\n\n" + timeRule
+        return common + "\n\n" + format + "\n\n" + timeRule + "\n\n" + speakerRule
     }
 
     static func organize(transcript: String, segments: [TranscriptSegment], provider: LLMProvider,
@@ -624,7 +639,10 @@ enum Organizer {
         if segments.isEmpty {
             source = transcript
         } else {
-            source = segments.map { "[\(fmt($0.start))-\(fmt($0.end))] \($0.text)" }.joined(separator: "\n")
+            source = segments.map { s in
+                let who = s.speaker.map { "说话人\($0)：" } ?? ""
+                return "[\(fmt(s.start))-\(fmt(s.end))] \(who)\(s.text)"
+            }.joined(separator: "\n")
         }
         let body: [String: Any] = [
             "model": model,

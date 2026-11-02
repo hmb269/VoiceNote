@@ -6,13 +6,14 @@ import UniformTypeIdentifiers
 // MARK: - 选项
 
 enum ShortcutEngine: String, AppEnum {
-    case byDefault, apple, local, siliconflow, groq, zhipu, aliyun
+    case byDefault, apple, local, localQwen, siliconflow, groq, zhipu, aliyun
 
     static var typeDisplayRepresentation: TypeDisplayRepresentation = "转写方式"
     static var caseDisplayRepresentations: [ShortcutEngine: DisplayRepresentation] = [
         .byDefault: "按 App 设置",
         .apple: "苹果本机（免费）",
         .local: "本地 SenseVoice",
+        .localQwen: "本地 Qwen3-ASR",
         .siliconflow: "硅基流动",
         .groq: "Groq Whisper",
         .zhipu: "智谱 GLM-ASR",
@@ -24,6 +25,7 @@ enum ShortcutEngine: String, AppEnum {
         case .byDefault: return AppConfig.asrEngine
         case .apple: return .apple
         case .local: return .local
+        case .localQwen: return .localQwen
         case .siliconflow: return .siliconflow
         case .groq: return .groq
         case .zhipu: return .zhipu

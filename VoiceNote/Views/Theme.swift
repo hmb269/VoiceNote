@@ -20,6 +20,9 @@ enum Theme {
     ]
 
     static func speakerColor(_ name: String) -> Color {
+        if name.hasPrefix("说话人"), let n = Int(name.dropFirst(3).prefix { $0.isNumber }), n > 0 {
+            return speakerColors[(n - 1) % speakerColors.count]
+        }
         let key = name.first.map { String($0) } ?? ""
         let order = ["甲", "乙", "丙", "丁", "A", "B", "C", "D"]
         if let i = order.firstIndex(of: key) { return speakerColors[i % speakerColors.count] }
