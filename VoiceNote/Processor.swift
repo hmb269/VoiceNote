@@ -177,16 +177,20 @@ final class Processor: ObservableObject {
                 if !AudioTools.isReadable(dest), let real = AudioTools.sniffExtension(dest), real != ext {
                     let fixed = Storage.recordingsDir.appendingPathComponent("\(UUID().uuidString).\(real)")
                     try FileManager.default.moveItem(at: dest, to: fixed)
-                    if AudioTools.isReadable(fixed) {
+                    if AudioTools.isReadable(fixed), !AudioTools.looksTruncated(fixed) {
                         ingest(fileName: fixed.lastPathComponent, source: .imported, createdAt: created, title: title)
                         return true
                     }
                     try FileManager.default.moveItem(at: fixed, to: dest)
                 }
-                // 系统读不了的格式（aac 裸流、amr 等）转成 m4a
-                if !AudioTools.isReadable(dest) {
+                // 系统读不了的格式（aac 裸流、amr 等），或只读出一小段的（文件头长度写错），转成 m4a
+                if !AudioTools.isReadable(dest) || AudioTools.looksTruncated(dest) {
                     let m4a = Storage.recordingsDir.appendingPathComponent("\(UUID().uuidString).m4a")
                     try await AudioTools.convertToM4A(dest, dest: m4a)
+                    if AudioTools.duration(of: m4a) < 1 {
+                        try? FileManager.default.removeItem(at: m4a)
+                        throw VNError("没读出声音（文件头：\(AudioTools.headHex(dest))）。请把文件发给开发者看看")
+                    }
                     try? FileManager.default.removeItem(at: dest)
                     ingest(fileName: m4a.lastPathComponent, source: .imported, createdAt: created, title: title)
                     return true
@@ -261,7 +265,7 @@ final class Processor: ObservableObject {
 
         var url = rec.fileURL
         // 以前导入的、系统读不了的格式，转写前先转成 m4a
-        if !AudioTools.isReadable(url) {
+        if !AudioTools.isReadable(url) || AudioTools.looksTruncated(url) {
             let m4a = Storage.recordingsDir.appendingPathComponent("\(UUID().uuidString).m4a")
             do {
                 try await AudioTools.convertToM4A(url, dest: m4a)
