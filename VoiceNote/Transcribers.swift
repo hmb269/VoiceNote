@@ -248,9 +248,72 @@ enum AliyunTranscriber {
     }
 }
 
+// MARK: - 硅基流动 SenseVoice（OpenAI 兼容的转写接口）
+
+enum SiliconTranscriber {
+    static func transcribe(url: URL, apiKey: String, model: String,
+                           progress: @escaping (Double) -> Void) async throws -> [TranscriptSegment] {
+        let chunks = try AudioTools.splitToWav(url: url, chunkSeconds: 30)
+        defer { AudioTools.cleanup(chunks) }
+        guard let endpoint = URL(string: "https://api.siliconflow.cn/v1/audio/transcriptions") else { return [] }
+
+        var all: [TranscriptSegment] = []
+        for (i, chunk) in chunks.enumerated() {
+            try Task.checkCancellation()
+            let boundary = "VN-\(UUID().uuidString)"
+            var body = Data()
+            func field(_ name: String, _ value: String) {
+                body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".data(using: .utf8)!)
+            }
+            field("model", model)
+            body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
+            body.append(try Data(contentsOf: chunk.url))
+            body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+
+            var req = URLRequest(url: endpoint)
+            req.httpMethod = "POST"
+            req.timeoutInterval = 120
+            req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            req.httpBody = body
+
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            guard (200..<300).contains(code), var text = json?["text"] as? String else {
+                let msg = (json?["message"] as? String) ?? String(data: data, encoding: .utf8).map { String($0.prefix(200)) } ?? ""
+                throw VNError("硅基流动转写失败（HTTP \(code)）：\(msg)")
+            }
+            // SenseVoice 会带 <|zh|><|NEUTRAL|> 这类标签
+            text = text.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
+            all += SegmentTools.splitEvenly(text, start: chunk.start, duration: chunk.duration)
+            progress(Double(i + 1) / Double(chunks.count))
+        }
+        return all
+    }
+}
+
 // MARK: - OpenAI 兼容接口
 
 enum OpenAIClient {
+    /// 拉取服务商的模型列表（GET /models）
+    static func listModels(baseURL: String, apiKey: String) async throws -> [String] {
+        var base = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        while base.hasSuffix("/") { base.removeLast() }
+        guard let url = URL(string: base + "/models") else { throw VNError("接口地址不对") }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 20
+        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code),
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let arr = json["data"] as? [[String: Any]] else {
+            throw VNError("这家服务商不支持拉取模型列表（HTTP \(code)），可以手动填模型名")
+        }
+        return arr.compactMap { $0["id"] as? String }.sorted()
+    }
+
     /// 流式请求：边生成边回调。onDelta(正文累计, 思考字数)
     static func chatStream(baseURL: String, apiKey: String, body: [String: Any], timeout: TimeInterval,
                            onDelta: @escaping (String, Int) -> Void) async throws -> String {

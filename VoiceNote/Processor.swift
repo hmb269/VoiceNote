@@ -181,6 +181,13 @@ final class Processor: ObservableObject {
             case .apple:
                 segs = try await AppleTranscriber.transcribe(url: url, localeID: AppConfig.appleLocale,
                                                              progress: report)
+            case .siliconflow:
+                guard let key = Keychain.get(.siliconflow) else {
+                    throw VNError("还没填硅基流动的 API Key，到 设置 → 语音转文字 里填")
+                }
+                segs = try await SiliconTranscriber.transcribe(url: url, apiKey: key,
+                                                               model: AppConfig.siliconModel,
+                                                               progress: report)
             case .aliyun:
                 guard let key = Keychain.get(.aliyun) else {
                     throw VNError("还没填阿里云百炼的 API Key，到设置里填")
@@ -226,10 +233,11 @@ final class Processor: ObservableObject {
             rec.errorMessage = "还没有可整理的文字，先转写"
             return
         }
-        let provider = override?.0 ?? AppConfig.llmProvider
-        let modelName = override?.1 ?? AppConfig.llmModel(provider)
+        let ref = override.map { ModelRef($0.0, $0.1) } ?? AppConfig.modelFor(style)
+        let provider = ref.provider
+        let modelName = ref.model
         guard let key = Keychain.get(provider.keyName) else {
-            rec.errorMessage = "还没填 \(provider.label) 的 API Key，到设置里填"
+            rec.errorMessage = "还没填 \(provider.label) 的 API Key，到 设置 → 服务商与密钥 里填"
             rec.status = .failed
             save()
             return

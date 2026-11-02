@@ -26,7 +26,7 @@ struct RecordingDetailView: View {
     @State private var showFullPlayer = false
     @State private var marking = false
     @State private var marks: [Highlight] = []
-    @AppStorage("organizeUsePro") private var usePro = false
+    @AppStorage("organizeModelChoice") private var modelChoice = ""
 
     private var isBusy: Bool { processor.busy.contains(rec.id) }
 
@@ -297,26 +297,29 @@ struct RecordingDetailView: View {
             Menu {
                 Section("① 选模型") {
                     Button {
-                        usePro = false
+                        modelChoice = ""
                     } label: {
-                        Label("\(AppConfig.llmModel(AppConfig.llmProvider))（设置里的）",
-                              systemImage: usePro ? "circle" : "checkmark.circle.fill")
+                        Label("自动（按设置里每种整理方式的模型）",
+                              systemImage: modelChoice.isEmpty ? "checkmark.circle.fill" : "circle")
                     }
                     .menuActionDismissBehavior(.disabled)
-                    Button {
-                        usePro = true
-                    } label: {
-                        Label("DeepSeek V4 Pro（更强）", systemImage: usePro ? "checkmark.circle.fill" : "circle")
+                    ForEach(AppConfig.quickModels) { r in
+                        Button {
+                            modelChoice = r.storage
+                        } label: {
+                            Label(r.label, systemImage: modelChoice == r.storage ? "checkmark.circle.fill" : "circle")
+                        }
+                        .menuActionDismissBehavior(.disabled)
                     }
-                    .menuActionDismissBehavior(.disabled)
                 }
                 Section("② 选整理方式开始整理") {
                     ForEach(OrganizeStyle.allCases) { st in
                         Button {
-                            processor.requestOrganize(rec, style: st,
-                                                      using: usePro ? (.deepseek, "deepseek-v4-pro") : nil)
+                            let r = ModelRef(storage: modelChoice)
+                            processor.requestOrganize(rec, style: st, using: r.map { ($0.provider, $0.model) })
                         } label: {
-                            Label(st.label, systemImage: st.icon)
+                            Label(modelChoice.isEmpty ? "\(st.label)（\(AppConfig.modelFor(st).model)）" : st.label,
+                                  systemImage: st.icon)
                         }
                     }
                 }

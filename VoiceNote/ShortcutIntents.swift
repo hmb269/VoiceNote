@@ -6,12 +6,13 @@ import UniformTypeIdentifiers
 // MARK: - 选项
 
 enum ShortcutEngine: String, AppEnum {
-    case byDefault, apple, aliyun
+    case byDefault, apple, siliconflow, aliyun
 
     static var typeDisplayRepresentation: TypeDisplayRepresentation = "转写方式"
     static var caseDisplayRepresentations: [ShortcutEngine: DisplayRepresentation] = [
         .byDefault: "按 App 设置",
         .apple: "苹果本机（免费）",
+        .siliconflow: "硅基流动 SenseVoice",
         .aliyun: "阿里云百炼",
     ]
 
@@ -19,6 +20,7 @@ enum ShortcutEngine: String, AppEnum {
         switch self {
         case .byDefault: return AppConfig.asrEngine
         case .apple: return .apple
+        case .siliconflow: return .siliconflow
         case .aliyun: return .aliyun
         }
     }
@@ -66,6 +68,12 @@ enum ShortcutWorker {
         switch engine {
         case .apple:
             return try await AppleTranscriber.transcribe(url: url, localeID: AppConfig.appleLocale) { _ in }
+        case .siliconflow:
+            guard let key = Keychain.get(.siliconflow) else {
+                throw VNError("还没在 App 设置里填硅基流动的 API Key")
+            }
+            return try await SiliconTranscriber.transcribe(url: url, apiKey: key,
+                                                           model: AppConfig.siliconModel) { _ in }
         case .aliyun:
             guard let key = Keychain.get(.aliyun) else {
                 throw VNError("还没在 App 设置里填阿里云百炼的 API Key")
@@ -79,13 +87,14 @@ enum ShortcutWorker {
 
     static func organize(_ text: String, segments: [TranscriptSegment],
                          style: OrganizeStyle = AppConfig.organizeStyle) async throws -> String {
-        let p = AppConfig.llmProvider
+        let ref = AppConfig.modelFor(style)
+        let p = ref.provider
         guard let key = Keychain.get(p.keyName) else {
             throw VNError("还没在 App 设置里填 \(p.label) 的 API Key")
         }
         return try await Organizer.organize(transcript: text, segments: segments, provider: p,
                                             apiKey: key, baseURL: AppConfig.llmBaseURL(p),
-                                            model: AppConfig.llmModel(p), style: style)
+                                            model: ref.model, style: style)
     }
 
     /// 把快捷指令传进来的文件存到录音目录
