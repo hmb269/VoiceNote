@@ -472,6 +472,7 @@ struct RecordingDetailView: View {
                     .foregroundStyle(.secondary)
             }
             .padding()
+            .keyboardDoneBar()
             .navigationTitle("校对这句")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

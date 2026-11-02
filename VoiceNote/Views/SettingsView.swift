@@ -147,6 +147,9 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .keyboardDoneBar()
+            .submitLabel(.done)
+            .onSubmit { hideKeyboard() }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -18,6 +18,7 @@ struct ContentView: View {
     /// 「录音」「导入」是动作，不切页面
     private var selection: Binding<RootTab> {
         Binding(get: { tab }, set: { new in
+            hideKeyboard()
             switch new {
             case .record:
                 toggleRecording(recorder)
@@ -109,6 +110,9 @@ struct HomeView: View {
     @Query(sort: \Recording.createdAt, order: .reverse) private var recordings: [Recording]
     @State private var showCalendar = false
     @State private var showPicker = false
+    @State private var selecting = false
+    @State private var selected: Set<UUID> = []
+    @State private var confirmBatchDelete = false
     @State private var toDelete: Recording?
     @State private var selectedDay = Calendar.current.startOfDay(for: Date())
 
@@ -138,6 +142,34 @@ struct HomeView: View {
             .scrollIndicators(.hidden)
             .background(Color(.systemBackground))
             .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .bottom) {
+                if selecting {
+                    let day = items(on: selectedDay)
+                    SelectionBar(count: selected.count,
+                                 allSelected: !day.isEmpty && day.allSatisfy { selected.contains($0.id) },
+                                 onSelectAll: {
+                                     if day.allSatisfy({ selected.contains($0.id) }) { selected = [] }
+                                     else { selected = Set(day.map(\.id)) }
+                                 },
+                                 onFavorite: {
+                                     recordings.filter { selected.contains($0.id) }.forEach { $0.isFavorite = true }
+                                     Processor.shared.showToast("已收藏 \(selected.count) 条")
+                                     withAnimation(.snappy) { selecting = false; selected = [] }
+                                 },
+                                 onDelete: { confirmBatchDelete = true })
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .onChange(of: selectedDay) { _, _ in selected = [] }
+            .confirmationDialog("删除选中的 \(selected.count) 条录音？", isPresented: $confirmBatchDelete,
+                                titleVisibility: .visible) {
+                Button("删除 \(selected.count) 条", role: .destructive) {
+                    deleteRecordings(recordings.filter { selected.contains($0.id) }, context: context)
+                    withAnimation(.snappy) { selecting = false; selected = [] }
+                }
+            } message: {
+                Text("录音文件和文字都会删掉，不能恢复")
+            }
             .navigationDestination(for: Recording.self) { RecordingDetailView(rec: $0) }
             .navigationDestination(for: String.self) { key in
                 if key == "all" { AllRecordingsView() }
@@ -169,33 +201,47 @@ struct HomeView: View {
                 Text("最近七天")
                     .font(.system(.title3, design: .rounded).weight(.bold))
                 Spacer()
-                NavigationLink(value: "all") {
-                    HStack(spacing: 3) {
-                        Text("全部录音")
-                        Image(systemName: "chevron.right").font(.caption.weight(.bold))
+                if selecting {
+                    Button("完成") {
+                        withAnimation(.snappy) { selecting = false; selected = [] }
+                    }
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(Theme.accent)
+                } else {
+                    NavigationLink(value: "all") {
+                        HStack(spacing: 3) {
+                            Text("全部录音")
+                            Image(systemName: "chevron.right").font(.caption.weight(.bold))
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.accent)
+                    }
+                    Button("选择") {
+                        withAnimation(.snappy) { selecting = true }
                     }
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Theme.accent)
+                    .foregroundStyle(.primary)
+                    .padding(.leading, 8)
+                    Button { showCalendar = true } label: {
+                        Image(systemName: "calendar")
+                            .font(.system(size: 16, weight: .semibold))
+                            .frame(width: 34, height: 34)
+                            .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 6)
+                    .accessibilityLabel("按日历选择")
+                    Button { showPicker = true } label: {
+                        Image(systemName: "square.and.arrow.down")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Theme.accent)
+                            .frame(width: 34, height: 34)
+                            .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 4)
+                    .accessibilityLabel("导入音频")
                 }
-                Button { showCalendar = true } label: {
-                    Image(systemName: "calendar")
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 34, height: 34)
-                        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .padding(.leading, 6)
-                .accessibilityLabel("按日历选择")
-                Button { showPicker = true } label: {
-                    Image(systemName: "square.and.arrow.down")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Theme.accent)
-                        .frame(width: 34, height: 34)
-                        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .padding(.leading, 4)
-                .accessibilityLabel("导入音频")
             }
             .padding(.horizontal, 20)
 
@@ -227,7 +273,7 @@ struct HomeView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 34)
                 } else {
-                    RecordingList(items: dayItems) { toDelete = $0 }
+                    RecordingList(items: dayItems, selection: selecting ? $selected : nil) { toDelete = $0 }
                 }
             }
             .cardBackground(cornerRadius: 24)
@@ -280,18 +326,38 @@ struct DayCell: View {
 /// 一组录音的行列表（带封面小图标），放在卡片里
 struct RecordingList: View {
     let items: [Recording]
+    var selection: Binding<Set<UUID>>? = nil
     var onDelete: (Recording) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element.id) { i, rec in
-                NavigationLink(value: rec) {
-                    RecordingRow(rec: rec)
+                if let selection {
+                    let on = selection.wrappedValue.contains(rec.id)
+                    Button {
+                        UISelectionFeedbackGenerator().selectionChanged()
+                        if on { selection.wrappedValue.remove(rec.id) } else { selection.wrappedValue.insert(rec.id) }
+                    } label: {
+                        HStack(spacing: 0) {
+                            Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 22))
+                                .foregroundStyle(on ? Theme.accent : Color.secondary.opacity(0.6))
+                                .padding(.leading, 14)
+                                .contentTransition(.symbolEffect(.replace))
+                            RecordingRow(rec: rec)
+                        }
+                        .background(on ? Theme.accent.opacity(0.08) : Color.clear)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    NavigationLink(value: rec) {
+                        RecordingRow(rec: rec)
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu { RowMenu(rec: rec) { onDelete(rec) } }
                 }
-                .buttonStyle(.plain)
-                .contextMenu { RowMenu(rec: rec) { onDelete(rec) } }
                 if i < items.count - 1 {
-                    Divider().padding(.leading, 84)
+                    Divider().padding(.leading, selection == nil ? 84 : 120)
                 }
             }
         }
@@ -299,10 +365,87 @@ struct RecordingList: View {
     }
 }
 
+/// 多选时底部的操作条
+struct SelectionBar: View {
+    let count: Int
+    let allSelected: Bool
+    var onSelectAll: () -> Void
+    var onFavorite: () -> Void
+    var onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: onSelectAll) {
+                Text(allSelected ? "全不选" : "全选")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(width: 64, height: 44)
+            }
+            Spacer()
+            Text(count == 0 ? "选择录音" : "已选 \(count) 条")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button(action: onFavorite) {
+                Image(systemName: "star")
+                    .font(.system(size: 18, weight: .semibold))
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(count == 0)
+            .accessibilityLabel("收藏所选")
+            Button(action: onDelete) {
+                Label("删除", systemImage: "trash")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .frame(height: 44)
+                    .background(count == 0 ? Color.gray.opacity(0.4) : Color.red, in: Capsule())
+            }
+            .disabled(count == 0)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .glassBackground(cornerRadius: 30)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
+    }
+}
+
+@MainActor
+func deleteRecordings(_ recs: [Recording], context: ModelContext) {
+    for r in recs {
+        try? FileManager.default.removeItem(at: r.fileURL)
+        context.delete(r)
+    }
+    try? context.save()
+}
+
+func hideKeyboard() {
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+}
+
+extension View {
+    /// 键盘上方加「完成」，并且滑动时收起键盘
+    func keyboardDoneBar() -> some View {
+        self
+            .scrollDismissesKeyboard(.immediately)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完成") { hideKeyboard() }
+                        .fontWeight(.semibold)
+                }
+            }
+    }
+}
+
 struct AllRecordingsView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \Recording.createdAt, order: .reverse) private var recordings: [Recording]
     @State private var toDelete: Recording?
+    @State private var selecting = false
+    @State private var selected: Set<UUID> = []
+    @State private var confirmBatchDelete = false
 
     var body: some View {
         ScrollView {
@@ -313,7 +456,7 @@ struct AllRecordingsView: View {
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 22)
-                        RecordingList(items: g.items) { toDelete = $0 }
+                        RecordingList(items: g.items, selection: selecting ? $selected : nil) { toDelete = $0 }
                             .cardBackground(cornerRadius: 22)
                             .padding(.horizontal, 16)
                     }
@@ -323,6 +466,39 @@ struct AllRecordingsView: View {
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle("全部录音")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(selecting ? "完成" : "选择") {
+                    withAnimation(.snappy) { selecting.toggle(); selected = [] }
+                }
+                .fontWeight(.semibold)
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if selecting {
+                SelectionBar(count: selected.count,
+                             allSelected: !recordings.isEmpty && selected.count == recordings.count,
+                             onSelectAll: {
+                                 selected = selected.count == recordings.count ? [] : Set(recordings.map(\.id))
+                             },
+                             onFavorite: {
+                                 recordings.filter { selected.contains($0.id) }.forEach { $0.isFavorite = true }
+                                 Processor.shared.showToast("已收藏 \(selected.count) 条")
+                                 withAnimation(.snappy) { selecting = false; selected = [] }
+                             },
+                             onDelete: { confirmBatchDelete = true })
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .confirmationDialog("删除选中的 \(selected.count) 条录音？", isPresented: $confirmBatchDelete,
+                            titleVisibility: .visible) {
+            Button("删除 \(selected.count) 条", role: .destructive) {
+                deleteRecordings(recordings.filter { selected.contains($0.id) }, context: context)
+                withAnimation(.snappy) { selecting = false; selected = [] }
+            }
+        } message: {
+            Text("录音文件和文字都会删掉，不能恢复")
+        }
         .confirmationDialog("删除这条录音？", isPresented: Binding(
             get: { toDelete != nil }, set: { if !$0 { toDelete = nil } }
         ), titleVisibility: .visible) {
@@ -789,6 +965,7 @@ struct SearchView: View {
             }
             .navigationTitle("搜索")
             .searchable(text: $query, prompt: "搜索标题、原文和整理内容")
+            .scrollDismissesKeyboard(.immediately)
             .navigationDestination(for: Recording.self) { RecordingDetailView(rec: $0) }
             .confirmationDialog("删除这条录音？", isPresented: Binding(
                 get: { toDelete != nil }, set: { if !$0 { toDelete = nil } }
