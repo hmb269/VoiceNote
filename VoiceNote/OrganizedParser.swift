@@ -27,13 +27,16 @@ enum OrganizedParser {
     }
 
     static func parse(_ markdown: String, segments: [TranscriptSegment]) -> [OrganizedLine] {
-        let rawLines = markdown.components(separatedBy: "\n")
-        var out: [OrganizedLine] = []
+        struct Item {
+            let id: Int
+            let text: String
+            var start: Double?
+            var end: Double?
+            let isBody: Bool
+        }
+        var items: [Item] = []
         var inBody = false
-        var cursor = 0
-        let segGrams = segments.map { bigrams($0.text) }
-
-        for (i, raw) in rawLines.enumerated() {
+        for (i, raw) in markdown.components(separatedBy: "\n").enumerated() {
             let ns = raw as NSString
             var start: Double?
             var end: Double?
@@ -43,54 +46,139 @@ enum OrganizedParser {
             }
             let clean = stripMarkers(raw)
             let trimmed = clean.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#") { inBody = trimmed.contains("正文") }
+            let isBody = inBody && !trimmed.isEmpty && !trimmed.hasPrefix("#")
+            items.append(Item(id: i, text: clean, start: start, end: end, isBody: isBody))
+        }
 
-            if trimmed.hasPrefix("#") {
-                inBody = trimmed.contains("正文")
-            }
-
-            // 没有时间标记时：正文部分按文字相似度去原文里找对应的句子
-            if start == nil, inBody, !trimmed.isEmpty, !trimmed.hasPrefix("#"), !segments.isEmpty {
-                if let (a, b) = match(line: trimmed, segGrams: segGrams, from: cursor) {
-                    start = segments[a].start
-                    end = segments[b].end
-                    cursor = b + 1
+        // 正文：和原文逐字对齐，每一行都算出对应的录音时间
+        let bodyIdx = items.indices.filter { items[$0].isBody }
+        if !segments.isEmpty, !bodyIdx.isEmpty {
+            let spans = align(lines: bodyIdx.map { spoken(items[$0].text) }, segments: segments)
+            for (k, idx) in bodyIdx.enumerated() {
+                if let sp = spans[k] {
+                    items[idx].start = sp.0
+                    items[idx].end = sp.1
                 }
             }
-            if let s = start, let e = end, e <= s { end = s + 3 }
-            out.append(OrganizedLine(id: i, text: clean, start: start, end: end))
         }
-        return out
+
+        return items.map { it in
+            var e = it.end
+            if let s = it.start, let ee = e, ee <= s { e = s + 2 }
+            return OrganizedLine(id: it.id, text: it.text, start: it.start, end: e)
+        }
     }
 
-    private static func match(line: String, segGrams: [Set<String>], from cursor: Int) -> (Int, Int)? {
-        var body = line
-        // 去掉「甲：」「乙（患者）：」这样的说话人前缀
-        if let r = body.range(of: "：") ?? body.range(of: ":"),
-           body.distance(from: body.startIndex, to: r.lowerBound) <= 8 {
-            body = String(body[r.upperBound...])
-        }
-        let lineGrams = bigrams(body)
-        guard !lineGrams.isEmpty else { return nil }
+    private static func keep(_ c: Character) -> Bool {
+        !c.isPunctuation && !c.isWhitespace && !c.isSymbol
+    }
 
-        // 只在光标后面找，保证时间是往后走的
-        let windows = [(cursor, min(segGrams.count, cursor + 30))]
-        for (lo, hi) in windows where lo < hi {
-            var first: Int?
-            var last: Int?
-            for j in lo..<hi {
-                let g = segGrams[j]
-                guard !g.isEmpty else { continue }
-                let score = Double(g.intersection(lineGrams).count) / Double(g.count)
-                if score >= 0.45 {
-                    if first == nil { first = j }
-                    last = j
-                } else if first != nil, j - (last ?? j) > 2 {
-                    break
-                }
-            }
-            if let f = first, let l = last { return (f, l) }
+    /// 去掉 Markdown 符号和「甲（医生）：」这样的说话人前缀，只留说的话
+    private static func spoken(_ line: String) -> String {
+        var t = line.trimmingCharacters(in: .whitespaces)
+        for p in ["- [ ] ", "- [x] ", "- ", "* "] where t.hasPrefix(p) {
+            t = String(t.dropFirst(p.count))
+            break
         }
-        return nil
+        if let r = t.range(of: "：") ?? t.range(of: ":"),
+           t.distance(from: t.startIndex, to: r.lowerBound) <= 10 {
+            t = String(t[r.upperBound...])
+        }
+        return t.replacingOccurrences(of: "**", with: "")
+    }
+
+    /// 把整理后的每一行和原文按字对齐（找共同的两字词，取最长递增链），返回每行的起止时间
+    private static func align(lines: [String], segments: [TranscriptSegment]) -> [(Double, Double)?] {
+        // 原文字符流，每个字按所在句子的时长平均分配时间
+        var sChars: [Character] = []
+        var sStart: [Double] = []
+        var sEnd: [Double] = []
+        for seg in segments {
+            let cs = Array(seg.text.filter(keep))
+            guard !cs.isEmpty else { continue }
+            let d = max(0.05, seg.end - seg.start) / Double(cs.count)
+            for k in 0..<cs.count {
+                sChars.append(cs[k])
+                sStart.append(seg.start + Double(k) * d)
+                sEnd.append(seg.start + Double(k + 1) * d)
+            }
+        }
+        var lChars: [Character] = []
+        var ranges: [Range<Int>] = []
+        for l in lines {
+            let a = lChars.count
+            lChars += Array(l.filter(keep))
+            ranges.append(a..<lChars.count)
+        }
+        guard sChars.count >= 2, lChars.count >= 2 else { return lines.map { _ in nil } }
+
+        var index: [String: [Int]] = [:]
+        for p in 0..<(sChars.count - 1) {
+            index[String([sChars[p], sChars[p + 1]]), default: []].append(p)
+        }
+        // (整理稿位置, 原文位置)，同一个整理稿位置按原文位置倒序，保证链上每个位置只用一次
+        var pairs: [(Int, Int)] = []
+        for i in 0..<(lChars.count - 1) {
+            guard let ps = index[String([lChars[i], lChars[i + 1]])], ps.count <= 40 else { continue }
+            for p in ps.reversed() { pairs.append((i, p)) }
+        }
+        var map: [Int: Int] = [:]
+        for (i, p) in longestChain(pairs) {
+            map[i] = p
+            if map[i + 1] == nil { map[i + 1] = p + 1 }
+        }
+
+        // 每行：用行内第一个和最后一个对上的字，向两端推出原文范围
+        var spans: [(Int, Int)?] = ranges.map { r in
+            let anchors = r.compactMap { i in map[i].map { (i, $0) } }
+            guard let f = anchors.first, let l = anchors.last else { return nil }
+            let sp = max(0, f.1 - (f.0 - r.lowerBound))
+            let ep = min(sChars.count - 1, l.1 + (r.upperBound - 1 - l.0))
+            return (sp, max(sp, ep))
+        }
+        // 保证前后不重叠
+        var lastEnd = -1
+        for k in spans.indices {
+            guard var s = spans[k] else { continue }
+            if s.0 <= lastEnd { s.0 = min(lastEnd + 1, s.1) }
+            spans[k] = s
+            lastEnd = s.1
+        }
+        // 没对上的行：夹在前后两行中间
+        for k in spans.indices where spans[k] == nil {
+            let prevEnd = spans[..<k].reversed().compactMap { $0 }.first?.1 ?? -1
+            let nextStart = spans[(k + 1)...].compactMap { $0 }.first?.0 ?? sChars.count
+            let a = min(sChars.count - 1, prevEnd + 1)
+            let b = max(a, min(sChars.count - 1, nextStart - 1))
+            spans[k] = (a, b)
+        }
+        return spans.map { sp in
+            guard let sp else { return nil }
+            return (max(0, sStart[sp.0] - 0.2), sEnd[sp.1] + 0.25)
+        }
+    }
+
+    private static func longestChain(_ pairs: [(Int, Int)]) -> [(Int, Int)] {
+        var tails: [Int] = []
+        var prev = [Int](repeating: -1, count: pairs.count)
+        for (k, pr) in pairs.enumerated() {
+            var lo = 0
+            var hi = tails.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if pairs[tails[mid]].1 < pr.1 { lo = mid + 1 } else { hi = mid }
+            }
+            if lo > 0 { prev[k] = tails[lo - 1] }
+            if lo == tails.count { tails.append(k) } else { tails[lo] = k }
+        }
+        var out: [(Int, Int)] = []
+        var k = tails.last ?? -1
+        while k >= 0 {
+            out.append(pairs[k])
+            k = prev[k]
+        }
+        return out.reversed()
     }
 
     static func bigrams(_ s: String) -> Set<String> {
