@@ -602,6 +602,8 @@ struct ASRSettingsView: View {
     private func asrIcon(_ e: ASREngine) -> String {
         switch e {
         case .apple: return "apple.logo"
+        case .local: return "cpu"
+        case .groq: return "bolt.fill"
         case .aliyun: return "cloud.fill"
         case .siliconflow: return "waveform.badge.mic"
         case .zhipu: return "mic.fill"
@@ -612,6 +614,8 @@ struct ASRSettingsView: View {
     private func asrColor(_ e: ASREngine) -> Color {
         switch e {
         case .apple: return .black
+        case .local: return .teal
+        case .groq: return .orange
         case .aliyun: return .purple
         case .siliconflow: return .indigo
         case .zhipu: return .blue
@@ -620,7 +624,7 @@ struct ASRSettingsView: View {
     }
 
     @ViewBuilder private func engineRow(_ e: ASREngine, current: Bool) -> some View {
-        let hasKey = e.keyName.map { Keychain.get($0) != nil } ?? true
+        let hasKey = e == .local ? LocalModels.isReady : (e.keyName.map { Keychain.get($0) != nil } ?? true)
         let content = HStack(spacing: 14) {
             Image(systemName: asrIcon(e))
                 .font(.system(size: 20, weight: .semibold))
@@ -639,6 +643,11 @@ struct ASRSettingsView: View {
                 Text(e.modelLabel).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Text(e.price).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 if e.keyName != nil { KeyStatus(ok: hasKey) }
+                if e == .local && !hasKey {
+                    Label("点进去下载模型", systemImage: "arrow.down.circle")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Theme.accent)
+                }
             }
             Spacer()
             if !current && hasKey {
@@ -652,7 +661,11 @@ struct ASRSettingsView: View {
         }
         .padding(.vertical, 4)
 
-        if e.keyName != nil {
+        if e == .local {
+            NavigationLink {
+                LocalModelView()
+            } label: { content }
+        } else if e.keyName != nil {
             NavigationLink {
                 ASRProviderDetailView(engine: e)
             } label: { content }
@@ -699,6 +712,7 @@ struct ASRProviderDetailView: View {
                 case .aliyun: Text("阿里云百炼的 Key 和「通义千问」整理共用，填一次两边都能用。")
                 case .zhipu: Text("和「智谱 GLM」整理共用同一个 Key。")
                 case .siliconflow: Text("硅基流动注册就能用，两个语音模型都免费。")
+                case .groq: Text("Groq 需要海外网络才能注册和调用，录音会上传到美国服务器。已自动设成简体中文并加标点，还会过滤静音处的「幻听」句子。")
                 default: EmptyView()
                 }
             }
@@ -794,7 +808,82 @@ struct ASRProviderDetailView: View {
         case "qwen3-asr-flash": return "粤普混说、口音重的录音识别好"
         case "glm-asr": return "智谱语音识别，每段最长约 30 秒，App 会自动切分"
         case "whisper-1": return "OpenAI Whisper 的通用名"
+        case "whisper-large-v3": return "最准，中文推荐"
+        case "whisper-large-v3-turbo": return "更快更省额度，准确率略低"
         default: return nil
+        }
+    }
+}
+
+// MARK: - 本地模型下载
+
+struct LocalModelView: View {
+    @ObservedObject private var dl = ModelDownloader.shared
+    @AppStorage(SettingsKey.asrEngine) private var engineRaw = ASREngine.apple.rawValue
+    @State private var confirmDelete = false
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("本地 SenseVoice").font(.title3.weight(.bold))
+                    Text("阿里开源的语音识别模型，下载到手机里离线运行：免费、不用网络、录音不出手机。普通话、粤语、英语、日语、韩语都能识别，几分钟的录音十几秒转完。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section {
+                if dl.ready {
+                    Label("模型已下载（约 \(LocalModels.totalMB) MB）", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Button {
+                        engineRaw = ASREngine.local.rawValue
+                    } label: {
+                        Label(engineRaw == ASREngine.local.rawValue ? "正在用本地转写" : "用本地转写",
+                              systemImage: engineRaw == ASREngine.local.rawValue ? "checkmark.circle.fill" : "circle")
+                    }
+                    Button(role: .destructive) { confirmDelete = true } label: {
+                        Label("删除模型，释放空间", systemImage: "trash")
+                    }
+                } else if dl.downloading {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ProgressView(value: dl.progress)
+                            .tint(Theme.accent)
+                        HStack {
+                            Text(dl.status).font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Text("\(Int(dl.progress * 100))%").font(.caption.monospacedDigit())
+                        }
+                    }
+                    Button("取消下载", role: .cancel) { dl.cancel() }
+                } else {
+                    Button {
+                        dl.start()
+                    } label: {
+                        Label("下载模型（约 \(LocalModels.totalMB) MB）", systemImage: "arrow.down.circle.fill")
+                            .font(.body.weight(.semibold))
+                    }
+                    if let e = dl.error {
+                        Text(e).font(.footnote).foregroundStyle(.red)
+                    }
+                }
+            } header: {
+                Text("模型")
+            } footer: {
+                Text("建议连 Wi-Fi 下载。默认从国内镜像下载，失败会自动换别的地址。下载一次以后都能离线用。")
+            }
+        }
+        .navigationTitle("本地 SenseVoice")
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("删除本地模型？", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("删除", role: .destructive) {
+                dl.delete()
+                if engineRaw == ASREngine.local.rawValue { engineRaw = ASREngine.apple.rawValue }
+            }
+        } message: {
+            Text("删除后本地转写不能用，需要时可以重新下载。")
         }
     }
 }

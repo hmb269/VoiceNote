@@ -6,6 +6,11 @@ options:
     watchOS: "10.0"
   createIntermediateGroups: true
 
+packages:
+  SherpaOnnx:
+    url: https://github.com/k2-fsa/sherpa-onnx
+    exactVersion: 2.0.1
+
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -56,6 +61,8 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: NO
     dependencies:
+      - package: SherpaOnnx
+        product: sherpa-onnx
       - target: VoiceNoteWatch
         embed: true
         codeSign: false

@@ -252,7 +252,7 @@ enum AliyunTranscriber {
 
 enum FileTranscriber {
     static func transcribe(url: URL, endpoint: String, apiKey: String, model: String,
-                           chunkSeconds: Double, name: String,
+                           chunkSeconds: Double, name: String, extra: [String: String] = [:],
                            progress: @escaping (Double) -> Void) async throws -> [TranscriptSegment] {
         var ep = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         while ep.hasSuffix("/") { ep.removeLast() }
@@ -271,6 +271,7 @@ enum FileTranscriber {
                 body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(k)\"\r\n\r\n\(v)\r\n".data(using: .utf8)!)
             }
             field("model", model)
+            for (k, v) in extra { field(k, v) }
             body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
             body.append(try Data(contentsOf: chunk.url))
             body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
@@ -299,10 +300,27 @@ enum FileTranscriber {
             }
             // SenseVoice 会带 <|zh|><|NEUTRAL|> 这类标签
             t = t.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
+            t = WhisperFilter.clean(t)
             all += SegmentTools.splitEvenly(t, start: chunk.start, duration: chunk.duration)
             progress(Double(i + 1) / Double(chunks.count))
         }
         return all
+    }
+}
+
+/// 去掉 Whisper 在静音处常见的「幻听」句子
+enum WhisperFilter {
+    static let junk = ["字幕由", "请不吝点赞", "订阅", "打赏支持", "明镜与点点", "Amara.org", "字幕志愿者", "感谢观看", "謝謝觀看"]
+
+    static func clean(_ s: String) -> String {
+        let parts = s.components(separatedBy: CharacterSet(charactersIn: "。！？\n"))
+        if parts.contains(where: { p in junk.contains { p.contains($0) } }) {
+            return parts.filter { p in !junk.contains { p.contains($0) } }
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "。")
+        }
+        return s
     }
 }
 
@@ -318,6 +336,16 @@ enum Transcription {
         switch engine {
         case .apple:
             return try await AppleTranscriber.transcribe(url: url, localeID: AppConfig.appleLocale, progress: progress)
+        case .local:
+            return try await LocalSenseVoice.transcribe(url: url, progress: progress)
+        case .groq:
+            return try await FileTranscriber.transcribe(
+                url: url, endpoint: "https://api.groq.com/openai/v1",
+                apiKey: try key(.groq), model: AppConfig.groqModel,
+                chunkSeconds: 60, name: "Groq",
+                extra: ["language": "zh", "temperature": "0",
+                        "prompt": "以下是普通话的句子，请使用简体中文，并加上标点符号。"],
+                progress: progress)
         case .aliyun:
             return try await AliyunTranscriber.transcribe(url: url, apiKey: try key(.aliyun),
                                                           baseURL: AppConfig.aliyunBaseURL,

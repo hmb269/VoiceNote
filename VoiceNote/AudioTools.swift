@@ -118,6 +118,48 @@ enum AudioTools {
         return result
     }
 
+    /// 把音频转成 16kHz 单声道 Float，一块一块交给 handler（不会一次读进内存）
+    static func forEach16kMono(url: URL, handler: ([Float]) throws -> Void) throws {
+        let input = try AVAudioFile(forReading: url)
+        guard let outFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000,
+                                            channels: 1, interleaved: false),
+              let converter = AVAudioConverter(from: input.processingFormat, to: outFormat),
+              let inBuf = AVAudioPCMBuffer(pcmFormat: input.processingFormat, frameCapacity: 8192) else {
+            throw VNError("无法读取这个音频格式")
+        }
+        let flag = EndFlag()
+        while true {
+            guard let outBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: 16000) else { break }
+            var convError: NSError?
+            let status = converter.convert(to: outBuf, error: &convError) { _, outStatus in
+                if flag.value {
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+                do {
+                    try input.read(into: inBuf, frameCount: 8192)
+                } catch {
+                    flag.value = true
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+                if inBuf.frameLength == 0 {
+                    flag.value = true
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+                outStatus.pointee = .haveData
+                return inBuf
+            }
+            if let convError { throw convError }
+            if outBuf.frameLength > 0, let ch = outBuf.floatChannelData?[0] {
+                try handler(Array(UnsafeBufferPointer(start: ch, count: Int(outBuf.frameLength))))
+            }
+            if status == .endOfStream || status == .error { break }
+            if status == .inputRanDry && flag.value { break }
+        }
+    }
+
     static func cleanup(_ chunks: [AudioChunk]) {
         guard let dir = chunks.first?.url.deletingLastPathComponent() else { return }
         try? FileManager.default.removeItem(at: dir)
