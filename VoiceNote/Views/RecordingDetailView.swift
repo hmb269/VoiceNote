@@ -24,6 +24,9 @@ struct RecordingDetailView: View {
     @State private var lines: [OrganizedLine] = []
     @State private var waveform: [Float] = []
     @State private var showFullPlayer = false
+    @State private var marking = false
+    @State private var marks: [Highlight] = []
+    @AppStorage("organizeUsePro") private var usePro = false
 
     private var isBusy: Bool { processor.busy.contains(rec.id) }
 
@@ -49,6 +52,8 @@ struct RecordingDetailView: View {
                 .tag(0)
             page(index: 1) { transcriptContent }
                 .tag(1)
+            page(index: 2) { highlightsContent }
+                .tag(2)
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
@@ -171,6 +176,7 @@ struct RecordingDetailView: View {
     }
 
     private func refresh() {
+        marks = rec.highlights
         segs = rec.segments
         lines = OrganizedParser.parse(rec.summary, segments: segs)
     }
@@ -245,7 +251,10 @@ struct RecordingDetailView: View {
                 ProgressView().tint(Theme.ai)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("AI 正在整理").font(.subheadline.weight(.semibold))
-                    Text("长录音要一两分钟").font(.caption).foregroundStyle(.secondary)
+                    Text(processor.organizeInfo[rec.id] ?? "准备中…")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .contentTransition(.numericText())
                 }
                 Spacer()
             }
@@ -286,24 +295,29 @@ struct RecordingDetailView: View {
             }
 
             Menu {
-                Section("用设置里的模型（\(AppConfig.llmModel(AppConfig.llmProvider))）") {
+                Section("① 选模型") {
+                    Button {
+                        usePro = false
+                    } label: {
+                        Label("\(AppConfig.llmModel(AppConfig.llmProvider))（设置里的）",
+                              systemImage: usePro ? "circle" : "checkmark.circle.fill")
+                    }
+                    .menuActionDismissBehavior(.disabled)
+                    Button {
+                        usePro = true
+                    } label: {
+                        Label("DeepSeek V4 Pro（更强）", systemImage: usePro ? "checkmark.circle.fill" : "circle")
+                    }
+                    .menuActionDismissBehavior(.disabled)
+                }
+                Section("② 选整理方式开始整理") {
                     ForEach(OrganizeStyle.allCases) { st in
-                        Button { processor.requestOrganize(rec, style: st) } label: {
+                        Button {
+                            processor.requestOrganize(rec, style: st,
+                                                      using: usePro ? (.deepseek, "deepseek-v4-pro") : nil)
+                        } label: {
                             Label(st.label, systemImage: st.icon)
                         }
-                    }
-                }
-                if !(AppConfig.llmProvider == .deepseek && AppConfig.llmModel(.deepseek) == "deepseek-v4-pro") {
-                    Menu {
-                        ForEach(OrganizeStyle.allCases) { st in
-                            Button {
-                                processor.requestOrganize(rec, style: st, using: (.deepseek, "deepseek-v4-pro"))
-                            } label: {
-                                Label(st.label, systemImage: st.icon)
-                            }
-                        }
-                    } label: {
-                        Label("用 DeepSeek V4 Pro 整理（更强）", systemImage: "bolt.fill")
                     }
                 }
             } label: {
@@ -324,12 +338,23 @@ struct RecordingDetailView: View {
     }
 
     private var tabSwitcher: some View {
-        HStack(spacing: 0) {
-            ForEach([0, 1], id: \.self) { i in
-                Button {
-                    withAnimation(.snappy(duration: 0.3)) { tab = i }
-                } label: {
-                    Label(i == 0 ? "整理" : "原文", systemImage: i == 0 ? "sparkles" : "text.alignleft")
+        HStack(spacing: 10) {
+            HStack(spacing: 0) {
+                ForEach([0, 1, 2], id: \.self) { i in
+                    Button {
+                        withAnimation(.snappy(duration: 0.3)) { tab = i }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: ["sparkles", "text.alignleft", "highlighter"][i])
+                            Text(["整理", "原文", "重点"][i])
+                            if i == 2 && !marks.isEmpty {
+                                Text("\(marks.count)")
+                                    .font(.caption2.weight(.bold))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Color.yellow.opacity(0.35), in: Capsule())
+                            }
+                        }
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(tab == i ? Color.primary : Color.secondary)
                         .frame(maxWidth: .infinity)
@@ -342,12 +367,121 @@ struct RecordingDetailView: View {
                                     .matchedGeometryEffect(id: "tab", in: tabNS)
                             }
                         }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(4)
+            .background(Color(.tertiarySystemFill), in: Capsule())
+
+            if tab != 2 {
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    withAnimation(.snappy) { marking.toggle() }
+                    if marking { showToast("点句子标为重点，再点一次取消") }
+                } label: {
+                    Image(systemName: "highlighter")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(marking ? Color.black : Color.primary)
+                        .frame(width: 42, height: 42)
+                        .background(marking ? Color.yellow : Color(.tertiarySystemFill), in: Circle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(marking ? "结束标重点" : "标重点")
+                .transition(.scale.combined(with: .opacity))
             }
         }
-        .padding(4)
-        .background(Color(.tertiarySystemFill), in: Capsule())
+    }
+
+    // MARK: 重点
+
+    private func plainKey(_ s: String) -> String {
+        OrgLineView.plain(s).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func isMarked(_ text: String) -> Bool {
+        let k = plainKey(text)
+        return marks.contains { $0.text == k }
+    }
+
+    private func toggleMark(text: String, start: Double?, end: Double?, from: String) {
+        let k = plainKey(text)
+        guard !k.isEmpty else { return }
+        var h = rec.highlights
+        if let i = h.firstIndex(where: { $0.text == k }) {
+            h.remove(at: i)
+        } else {
+            h.append(Highlight(text: k, start: start, end: end, from: from))
+        }
+        UISelectionFeedbackGenerator().selectionChanged()
+        withAnimation(.snappy(duration: 0.2)) {
+            rec.highlights = h
+            marks = h
+        }
+    }
+
+    private var sortedMarks: [Highlight] {
+        marks.sorted { ($0.start ?? .greatestFiniteMagnitude, $0.createdAt) < ($1.start ?? .greatestFiniteMagnitude, $1.createdAt) }
+    }
+
+    @ViewBuilder private var highlightsContent: some View {
+        if marks.isEmpty {
+            EmptyHint(icon: "highlighter",
+                      title: "还没有重点",
+                      text: "在「整理」或「原文」页点右边的荧光笔，再点句子就会收进这里；\n也可以长按句子选「标为重点」")
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    TipLine(text: "点一条播放 · 长按复制、分享或移除")
+                    Spacer()
+                    Button {
+                        copy(sortedMarks.map { "• " + $0.text }.joined(separator: "\n"))
+                    } label: {
+                        Label("复制全部", systemImage: "doc.on.doc")
+                            .font(.caption.weight(.semibold))
+                    }
+                }
+                ForEach(sortedMarks) { h in
+                    let active = player.isPlaying && h.start.map { player.current >= $0 } == true
+                        && h.end.map { player.current < $0 } == true
+                    HStack(alignment: .top, spacing: 12) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.yellow)
+                            .frame(width: 4)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(h.text)
+                                .lineSpacing(5)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            HStack(spacing: 6) {
+                                if let s = h.start {
+                                    Chip(icon: "play.fill", text: formatDuration(s), tint: Theme.accent)
+                                }
+                                Chip(icon: h.from == "原文" ? "text.alignleft" : "sparkles", text: h.from)
+                            }
+                        }
+                    }
+                    .padding(14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(active ? Color.yellow.opacity(0.18) : Color(.secondarySystemGroupedBackground))
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if let s = h.start { player.play(from: s, until: h.end) }
+                    }
+                    .contextMenu {
+                        Button { copy(h.text) } label: { Label("复制", systemImage: "doc.on.doc") }
+                        if let s = h.start, let e = h.end {
+                            Button { player.play(from: s, until: nil) } label: { Label("从这里往下播", systemImage: "play.square.stack") }
+                            Button { shareClip(start: s, end: e) } label: { Label("分享这段录音", systemImage: "square.and.arrow.up") }
+                        }
+                        Button(role: .destructive) {
+                            toggleMark(text: h.text, start: nil, end: nil, from: h.from)
+                        } label: { Label("移出重点", systemImage: "minus.circle") }
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder private var organizedContent: some View {
@@ -396,11 +530,13 @@ struct RecordingDetailView: View {
                             .textCase(nil)
                     }
                     ForEach(section.lines) { line in
-                        OrgLineView(line: line, active: line.id == activeID)
+                        OrgLineView(line: line, active: line.id == activeID, marked: isMarked(line.text))
                             .id("line-\(line.id)")
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                if let s = line.start, let e = line.end {
+                                if marking {
+                                    toggleMark(text: line.text, start: line.start, end: line.end, from: "整理")
+                                } else if let s = line.start, let e = line.end {
                                     player.play(from: s, until: singleSentence ? e : nil)
                                 }
                             }
@@ -417,6 +553,11 @@ struct RecordingDetailView: View {
     @ViewBuilder private func lineMenu(_ line: OrganizedLine) -> some View {
         let text = OrgLineView.plain(line.text)
         Button { copy(text) } label: { Label("复制这段", systemImage: "doc.on.doc") }
+        Button {
+            toggleMark(text: line.text, start: line.start, end: line.end, from: "整理")
+        } label: {
+            Label(isMarked(line.text) ? "取消重点" : "标为重点", systemImage: "highlighter")
+        }
         if let s = line.start, let e = line.end {
             Button { player.play(from: s, until: e) } label: { Label("只播这一段", systemImage: "play") }
             Button { player.play(from: s, until: nil) } label: { Label("从这里往下播", systemImage: "play.square.stack") }
@@ -433,6 +574,7 @@ struct RecordingDetailView: View {
                 .padding(.bottom, 8)
             ForEach(segs) { seg in
                 let active = seg.id == activeID
+                let marked = isMarked(seg.text)
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Text(formatDuration(seg.start))
                         .font(.caption.monospacedDigit().weight(.medium))
@@ -447,15 +589,29 @@ struct RecordingDetailView: View {
                 .padding(.horizontal, 10)
                 .background(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(active ? Theme.accent.opacity(0.10) : Color.clear)
+                        .fill(active ? Theme.accent.opacity(0.10) : (marked ? Color.yellow.opacity(0.22) : Color.clear))
                 )
+                .overlay(alignment: .leading) {
+                    if marked {
+                        RoundedRectangle(cornerRadius: 2).fill(Color.yellow).frame(width: 4).padding(.vertical, 6)
+                    }
+                }
                 .contentShape(Rectangle())
                 .id(seg.id)
                 .onTapGesture {
-                    player.play(from: seg.start, until: singleSentence ? seg.end : nil)
+                    if marking {
+                        toggleMark(text: seg.text, start: seg.start, end: seg.end, from: "原文")
+                    } else {
+                        player.play(from: seg.start, until: singleSentence ? seg.end : nil)
+                    }
                 }
                 .contextMenu {
                     Button { copy(seg.text) } label: { Label("复制这句", systemImage: "doc.on.doc") }
+                    Button {
+                        toggleMark(text: seg.text, start: seg.start, end: seg.end, from: "原文")
+                    } label: {
+                        Label(marked ? "取消重点" : "标为重点", systemImage: "highlighter")
+                    }
                     Button { player.play(from: seg.start, until: seg.end) } label: { Label("只播这一句", systemImage: "play") }
                     Button { player.play(from: seg.start, until: nil) } label: { Label("从这里往下播", systemImage: "play.square.stack") }
                     Button {
@@ -564,6 +720,9 @@ struct RecordingDetailView: View {
             parts.append(OrganizedParser.stripMarkers(rec.summary))
         } else {
             parts.append("# \(rec.title)")
+        }
+        if !marks.isEmpty {
+            parts.append("## 重点\n" + sortedMarks.map { "- " + $0.text }.joined(separator: "\n"))
         }
         if rec.hasSpeech {
             parts.append("## 转写原文\n\(rec.transcript)")
@@ -795,6 +954,7 @@ struct OrgSection: Identifiable {
 struct OrgLineView: View {
     let line: OrganizedLine
     let active: Bool
+    var marked = false
 
     private static let speakerFirst: Set<Character> = ["甲", "乙", "丙", "丁", "戊", "说"]
 
@@ -817,11 +977,18 @@ struct OrgLineView: View {
         }
         .padding(.vertical, line.hasTime ? 6 : 0)
         .padding(.horizontal, line.hasTime ? 8 : 0)
+        .padding(.vertical, marked && !line.hasTime ? 6 : 0)
+        .padding(.horizontal, marked && !line.hasTime ? 8 : 0)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(active ? Theme.accent.opacity(0.10) : Color.clear)
+                .fill(active ? Theme.accent.opacity(0.10) : (marked ? Color.yellow.opacity(0.22) : Color.clear))
         )
-        .padding(.horizontal, line.hasTime ? -8 : 0)
+        .overlay(alignment: .leading) {
+            if marked {
+                RoundedRectangle(cornerRadius: 2).fill(Color.yellow).frame(width: 4).padding(.vertical, 4)
+            }
+        }
+        .padding(.horizontal, (line.hasTime || marked) ? -8 : 0)
     }
 
     @ViewBuilder private var content: some View {

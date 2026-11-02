@@ -3,6 +3,11 @@ import Foundation
 import SwiftData
 import UIKit
 
+private final class StreamBox: @unchecked Sendable {
+    var lastUI = Date.distantPast
+    var finished = false
+}
+
 /// 负责：新录音入库、转写、AI 整理。所有任务排队一个一个跑。
 @MainActor
 final class Processor: ObservableObject {
@@ -13,6 +18,8 @@ final class Processor: ObservableObject {
     @Published var busy: Set<UUID> = []
     @Published var lastError: String?
     @Published var toast: String?
+    /// 整理进度说明，比如「思考中」「已写 1200 字」
+    @Published var organizeInfo: [UUID: String] = [:]
 
     func showToast(_ text: String) {
         toast = text
@@ -237,6 +244,24 @@ final class Processor: ObservableObject {
         rec.status = .organizing
         rec.errorMessage = ""
         save()
+        let oldSummary = rec.summary
+        organizeInfo[id] = "正在连接 \(modelName)…"
+        defer { organizeInfo[id] = nil }
+
+        let box = StreamBox()
+        let onProgress: (String, Int) -> Void = { text, thinking in
+            Task { @MainActor in
+                let p = Processor.shared
+                guard !box.finished, Date().timeIntervalSince(box.lastUI) > 0.5 else { return }
+                box.lastUI = Date()
+                if text.isEmpty {
+                    p.organizeInfo[id] = thinking > 0 ? "模型在思考（\(thinking) 字）…" : "等待模型回复…"
+                } else {
+                    p.organizeInfo[id] = "正在写，已写 \(text.count) 字"
+                    rec.summary = Organizer.clean(text)
+                }
+            }
+        }
 
         do {
             let md = try await Organizer.organize(transcript: rec.transcript,
@@ -245,11 +270,15 @@ final class Processor: ObservableObject {
                                                   apiKey: key,
                                                   baseURL: AppConfig.llmBaseURL(provider),
                                                   model: modelName,
-                                                  style: style)
+                                                  style: style,
+                                                  onProgress: onProgress)
+            box.finished = true
             rec.summary = md
             if let t = Organizer.extractTitle(md) { rec.title = t }
             rec.status = .done
         } catch {
+            box.finished = true
+            rec.summary = oldSummary
             rec.status = .failed
             rec.errorMessage = "整理失败：\(error.localizedDescription)"
         }

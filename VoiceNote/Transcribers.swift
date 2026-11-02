@@ -251,6 +251,64 @@ enum AliyunTranscriber {
 // MARK: - OpenAI 兼容接口
 
 enum OpenAIClient {
+    /// 流式请求：边生成边回调。onDelta(正文累计, 思考字数)
+    static func chatStream(baseURL: String, apiKey: String, body: [String: Any], timeout: TimeInterval,
+                           onDelta: @escaping (String, Int) -> Void) async throws -> String {
+        var base = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        while base.hasSuffix("/") { base.removeLast() }
+        if base.hasSuffix("/chat/completions") {
+            base = String(base.dropLast("/chat/completions".count))
+        }
+        guard let url = URL(string: base + "/chat/completions"), !base.isEmpty else {
+            throw VNError("接口地址不对：\(baseURL)")
+        }
+        var b = body
+        b["stream"] = true
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = timeout
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try JSONSerialization.data(withJSONObject: b)
+
+        let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if !(200..<300).contains(code) {
+            var raw = ""
+            for try await line in bytes.lines { raw += line; if raw.count > 2000 { break } }
+            var msg = String(raw.prefix(300))
+            if let d = raw.data(using: .utf8),
+               let json = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] {
+                if let err = json["error"] as? [String: Any], let m = err["message"] as? String { msg = m }
+                else if let m = json["message"] as? String { msg = m }
+            }
+            throw VNError("请求失败（HTTP \(code)）：\(msg)")
+        }
+
+        var content = ""
+        var reasoning = 0
+        for try await line in bytes.lines {
+            try Task.checkCancellation()
+            guard line.hasPrefix("data:") else { continue }
+            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            if payload == "[DONE]" { break }
+            guard let d = payload.data(using: .utf8),
+                  let json = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { continue }
+            if let err = json["error"] as? [String: Any], let m = err["message"] as? String {
+                throw VNError("生成中断：\(m)")
+            }
+            guard let choices = json["choices"] as? [[String: Any]],
+                  let delta = choices.first?["delta"] as? [String: Any] else { continue }
+            if let r = delta["reasoning_content"] as? String { reasoning += r.count }
+            if let c = delta["content"] as? String, !c.isEmpty {
+                content += c
+            }
+            onDelta(content, reasoning)
+        }
+        return content
+    }
+
     static func chat(baseURL: String, apiKey: String, body: [String: Any],
                      timeout: TimeInterval) async throws -> String {
         var base = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -407,7 +465,8 @@ enum Organizer {
 
     static func organize(transcript: String, segments: [TranscriptSegment], provider: LLMProvider,
                          apiKey: String, baseURL: String, model: String,
-                         style: OrganizeStyle = AppConfig.organizeStyle) async throws -> String {
+                         style: OrganizeStyle = AppConfig.organizeStyle,
+                         onProgress: ((String, Int) -> Void)? = nil) async throws -> String {
         let source: String
         if segments.isEmpty {
             source = transcript
@@ -424,8 +483,21 @@ enum Organizer {
             "stream": false,
         ]
         _ = provider // 新版 GLM Flash 不支持关闭思考，不再传 thinking 参数
-        let out = try await OpenAIClient.chat(baseURL: baseURL, apiKey: apiKey, body: body, timeout: 600)
-        return clean(out)
+        // 智谱的 Flash 模型总是先「思考」，把思考强度调低能快很多；不支持这个参数时自动去掉重试
+        var fast = body
+        if provider == .zhipu {
+            fast["reasoning_effort"] = "low"
+        }
+        let progress = onProgress ?? { _, _ in }
+        do {
+            let out = try await OpenAIClient.chatStream(baseURL: baseURL, apiKey: apiKey, body: fast,
+                                                        timeout: 900, onDelta: progress)
+            return clean(out)
+        } catch let e as VNError where provider == .zhipu && e.message.contains("HTTP 400") {
+            let out = try await OpenAIClient.chatStream(baseURL: baseURL, apiKey: apiKey, body: body,
+                                                        timeout: 900, onDelta: progress)
+            return clean(out)
+        }
     }
 
     private static func fmt(_ t: Double) -> String {

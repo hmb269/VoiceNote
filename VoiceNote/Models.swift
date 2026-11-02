@@ -41,6 +41,16 @@ final class Recording {
     var autoPending: Bool
     var segmentsData: Data? = nil
     var isFavorite: Bool = false
+    var highlightsData: Data? = nil
+
+    var highlights: [Highlight] {
+        get {
+            guard let highlightsData,
+                  let h = try? JSONDecoder().decode([Highlight].self, from: highlightsData) else { return [] }
+            return h
+        }
+        set { highlightsData = try? JSONEncoder().encode(newValue) }
+    }
 
     init(title: String, createdAt: Date, duration: Double, fileName: String, source: RecordingSource) {
         self.id = UUID()
@@ -96,6 +106,16 @@ final class Recording {
         f.dateFormat = "M月d日 HH:mm"
         return "\(source.label) \(f.string(from: date))"
     }
+}
+
+/// 用户标记的重点句
+struct Highlight: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var text: String
+    var start: Double?
+    var end: Double?
+    var from: String          // 「原文」或「整理」
+    var createdAt = Date()
 }
 
 struct TranscriptSegment: Codable, Identifiable, Hashable {
