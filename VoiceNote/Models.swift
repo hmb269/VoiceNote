@@ -43,6 +43,8 @@ final class Recording {
     var isFavorite: Bool = false
     var highlightsData: Data? = nil
     var highlightSummary: String = ""
+    var organizedModel: String = ""
+    var organizedStyle: String = ""
 
     var highlights: [Highlight] {
         get {

@@ -278,23 +278,69 @@ struct RecordingDetailView: View {
         }
     }
 
+    /// 这条录音上次用的转写方式；没转写过就是设置里的默认
+    private var currentEngine: ASREngine {
+        ASREngine.allCases.first { $0.shortLabel == rec.engineUsed } ?? AppConfig.asrEngine
+    }
+
+    /// 下次整理会用的模型（看第一个整理方式；选了固定模型就是它）
+    private var nextModelName: String {
+        if let r = ModelRef(storage: modelChoice) { return r.model }
+        return "自动"
+    }
+
+    private var organizeSubtitle: String {
+        if !rec.summary.isEmpty && !rec.organizedModel.isEmpty {
+            let st = OrganizeStyle(rawValue: rec.organizedStyle)?.label ?? ""
+            return st.isEmpty ? rec.organizedModel : "\(st) · \(rec.organizedModel)"
+        }
+        if let r = ModelRef(storage: modelChoice) { return r.model }
+        return AppConfig.modelFor(AppConfig.organizeStyle).model
+    }
+
+    private func actionLabel(icon: String, title: String, subtitle: String) -> some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                Text(title)
+            }
+            .font(.subheadline.weight(.semibold))
+            Text(subtitle)
+                .font(.caption2.weight(.medium))
+                .opacity(0.75)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, minHeight: 54)
+    }
+
     private var actions: some View {
         HStack(spacing: 12) {
             Menu {
-                ForEach(ASREngine.allCases) { engine in
-                    Button(engine.label) {
-                        processor.requestTranscribe(rec, engine: engine)
+                Section("选一种方式重新转写（✓ 是这条现在用的）") {
+                    ForEach(ASREngine.allCases) { engine in
+                        Button {
+                            processor.requestTranscribe(rec, engine: engine)
+                        } label: {
+                            let isDefault = engine == AppConfig.asrEngine
+                            let title = engine.title + (isDefault ? "（默认）" : "")
+                            if engine == currentEngine && !rec.transcript.isEmpty {
+                                Label(title, systemImage: "checkmark")
+                            } else {
+                                Text(title)
+                            }
+                            Text(engine.price.components(separatedBy: " · ").prefix(2).joined(separator: " · "))
+                        }
                     }
                 }
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "text.bubble.fill")
-                    Text(rec.transcript.isEmpty ? "转写" : "重新转写")
-                }
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color(.systemBackground))
-                .frame(maxWidth: .infinity, minHeight: 48)
-                .background(Color.primary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                actionLabel(icon: "text.bubble.fill",
+                            title: rec.transcript.isEmpty ? "转写" : "重新转写",
+                            subtitle: rec.transcript.isEmpty ? "默认：\(AppConfig.asrEngine.shortLabel)"
+                                                             : "当前：\(currentEngine.shortLabel)")
+                    .foregroundStyle(Color(.systemBackground))
+                    .background(Color.primary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
 
             Menu {
@@ -302,38 +348,48 @@ struct RecordingDetailView: View {
                     Button {
                         modelChoice = ""
                     } label: {
-                        Label("自动（按每种整理方式的设置）", systemImage: modelChoice.isEmpty ? "checkmark" : "")
+                        if modelChoice.isEmpty {
+                            Label("自动（按每种整理方式的设置）", systemImage: "checkmark")
+                        } else {
+                            Text("自动（按每种整理方式的设置）")
+                        }
                     }
                     ForEach(AppConfig.quickModels) { r in
                         Button {
                             modelChoice = r.storage
                         } label: {
-                            Label(r.label, systemImage: modelChoice == r.storage ? "checkmark" : "")
+                            if modelChoice == r.storage {
+                                Label(r.label, systemImage: "checkmark")
+                            } else {
+                                Text(r.label)
+                            }
                         }
                     }
                 } label: {
-                    Label("模型：\(ModelRef(storage: modelChoice)?.model ?? "自动")", systemImage: "cpu")
+                    Label("模型：\(nextModelName)", systemImage: "cpu")
                 }
-                Divider()
-                ForEach(OrganizeStyle.allCases) { st in
-                    Button {
-                        let r = ModelRef(storage: modelChoice)
-                        processor.requestOrganize(rec, style: st, using: r.map { ($0.provider, $0.model) })
-                    } label: {
-                        Label(st.label, systemImage: st.icon)
-                        Text((ModelRef(storage: modelChoice) ?? AppConfig.modelFor(st)).model)
+                Section("选整理方式开始（✓ 是上次用的）") {
+                    ForEach(OrganizeStyle.allCases) { st in
+                        Button {
+                            let r = ModelRef(storage: modelChoice)
+                            processor.requestOrganize(rec, style: st, using: r.map { ($0.provider, $0.model) })
+                        } label: {
+                            if !rec.summary.isEmpty && rec.organizedStyle == st.rawValue {
+                                Label(st.label, systemImage: "checkmark")
+                            } else {
+                                Label(st.label, systemImage: st.icon)
+                            }
+                            Text((ModelRef(storage: modelChoice) ?? AppConfig.modelFor(st)).model)
+                        }
                     }
                 }
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "sparkles")
-                    Text(rec.summary.isEmpty ? "AI 整理" : "重新整理")
-                }
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, minHeight: 48)
-                .background(Theme.aiGradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .opacity(rec.hasSpeech ? 1 : 0.4)
+                actionLabel(icon: "sparkles",
+                            title: rec.summary.isEmpty ? "AI 整理" : "重新整理",
+                            subtitle: organizeSubtitle)
+                    .foregroundStyle(.white)
+                    .background(Theme.aiGradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .opacity(rec.hasSpeech ? 1 : 0.4)
             }
             .disabled(!rec.hasSpeech)
         }

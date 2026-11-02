@@ -303,6 +303,8 @@ final class Processor: ObservableObject {
                                                   onProgress: onProgress)
             box.finished = true
             rec.summary = md
+            rec.organizedModel = modelName
+            rec.organizedStyle = style.rawValue
             if let t = Organizer.extractTitle(md) { rec.title = t }
             rec.status = .done
         } catch {
