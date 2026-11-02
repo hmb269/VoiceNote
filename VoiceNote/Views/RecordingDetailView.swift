@@ -27,6 +27,8 @@ struct RecordingDetailView: View {
     @State private var marking = false
     @State private var marks: [Highlight] = []
     @AppStorage("organizeModelChoice") private var modelChoice = ""
+    @State private var pickedEngine: ASREngine?
+    @State private var pickedStyle: OrganizeStyle?
 
     private var isBusy: Bool { processor.busy.contains(rec.id) }
 
@@ -298,99 +300,127 @@ struct RecordingDetailView: View {
         return AppConfig.modelFor(AppConfig.organizeStyle).model
     }
 
-    private func actionLabel(icon: String, title: String, subtitle: String) -> some View {
-        VStack(spacing: 2) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                Text(title)
+    private var engine: ASREngine { pickedEngine ?? currentEngine }
+    private var style: OrganizeStyle {
+        pickedStyle ?? OrganizeStyle(rawValue: rec.organizedStyle) ?? AppConfig.organizeStyle
+    }
+    private var modelForStyle: String {
+        (ModelRef(storage: modelChoice) ?? AppConfig.modelFor(style)).model
+    }
+
+    /// 一个栏目两个按钮：左边直接执行，右边选方式
+    private func splitBar<M: View>(icon: String, title: String, option: String, optionIcon: String,
+                                   foreground: Color, background: AnyShapeStyle,
+                                   action: @escaping () -> Void,
+                                   @ViewBuilder menu: () -> M) -> some View {
+        HStack(spacing: 0) {
+            Button(action: action) {
+                HStack(spacing: 8) {
+                    Image(systemName: icon)
+                    Text(title)
+                }
+                .font(.subheadline.weight(.bold))
+                .frame(maxWidth: .infinity, minHeight: 50)
+                .contentShape(Rectangle())
             }
-            .font(.subheadline.weight(.semibold))
-            Text(subtitle)
-                .font(.caption2.weight(.medium))
-                .opacity(0.75)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+            .buttonStyle(.plain)
+
+            Rectangle()
+                .fill(foreground.opacity(0.25))
+                .frame(width: 1, height: 26)
+
+            Menu {
+                menu()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: optionIcon).font(.caption)
+                    Text(option)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                    Image(systemName: "chevron.up.chevron.down").font(.caption2.weight(.bold))
+                }
+                .font(.footnote.weight(.semibold))
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, minHeight: 50)
+                .contentShape(Rectangle())
+            }
         }
-        .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity, minHeight: 54)
+        .foregroundStyle(foreground)
+        .background(background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private var actions: some View {
-        HStack(spacing: 12) {
-            Menu {
-                Section("选一种方式重新转写（✓ 是这条现在用的）") {
-                    ForEach(ASREngine.allCases) { engine in
+        VStack(spacing: 10) {
+            splitBar(icon: "text.bubble.fill",
+                     title: rec.transcript.isEmpty ? "转写" : "重新转写",
+                     option: engine.shortLabel,
+                     optionIcon: "waveform",
+                     foreground: Color(.systemBackground),
+                     background: AnyShapeStyle(Color.primary),
+                     action: { processor.requestTranscribe(rec, engine: engine) }) {
+                Section("选转写方式（选好后点左边开始）") {
+                    ForEach(ASREngine.allCases) { e in
                         Button {
-                            processor.requestTranscribe(rec, engine: engine)
+                            pickedEngine = e
                         } label: {
-                            let isDefault = engine == AppConfig.asrEngine
-                            let title = engine.title + (isDefault ? "（默认）" : "")
-                            if engine == currentEngine && !rec.transcript.isEmpty {
+                            let title = e.title + (e == AppConfig.asrEngine ? "（默认）" : "")
+                            if e == engine {
                                 Label(title, systemImage: "checkmark")
                             } else {
                                 Text(title)
                             }
-                            Text(engine.price.components(separatedBy: " · ").prefix(2).joined(separator: " · "))
+                            Text(e.price.components(separatedBy: " · ").prefix(2).joined(separator: " · "))
                         }
                     }
                 }
-            } label: {
-                actionLabel(icon: "text.bubble.fill",
-                            title: rec.transcript.isEmpty ? "转写" : "重新转写",
-                            subtitle: rec.transcript.isEmpty ? "默认：\(AppConfig.asrEngine.shortLabel)"
-                                                             : "当前：\(currentEngine.shortLabel)")
-                    .foregroundStyle(Color(.systemBackground))
-                    .background(Color.primary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
 
-            Menu {
-                Menu {
+            splitBar(icon: "sparkles",
+                     title: rec.summary.isEmpty ? "AI 整理" : "重新整理",
+                     option: "\(style.label) · \(modelForStyle)",
+                     optionIcon: style.icon,
+                     foreground: .white,
+                     background: AnyShapeStyle(Theme.aiGradient),
+                     action: {
+                         let r = ModelRef(storage: modelChoice)
+                         processor.requestOrganize(rec, style: style, using: r.map { ($0.provider, $0.model) })
+                     }) {
+                Section("整理方式") {
+                    ForEach(OrganizeStyle.allCases) { st in
+                        Button {
+                            pickedStyle = st
+                        } label: {
+                            if st == style {
+                                Label(st.label, systemImage: "checkmark")
+                            } else {
+                                Label(st.label, systemImage: st.icon)
+                            }
+                        }
+                    }
+                }
+                Section("模型") {
                     Button {
                         modelChoice = ""
                     } label: {
-                        if modelChoice.isEmpty {
-                            Label("自动（按每种整理方式的设置）", systemImage: "checkmark")
-                        } else {
-                            Text("自动（按每种整理方式的设置）")
-                        }
+                        let t = "自动（\(AppConfig.modelFor(style).model)）"
+                        if modelChoice.isEmpty { Label(t, systemImage: "checkmark") } else { Text(t) }
+                        Text("按设置里每种整理方式指定的模型")
                     }
                     ForEach(AppConfig.quickModels) { r in
                         Button {
                             modelChoice = r.storage
                         } label: {
                             if modelChoice == r.storage {
-                                Label(r.label, systemImage: "checkmark")
+                                Label(r.model, systemImage: "checkmark")
                             } else {
-                                Text(r.label)
+                                Text(r.model)
                             }
-                        }
-                    }
-                } label: {
-                    Label("模型：\(nextModelName)", systemImage: "cpu")
-                }
-                Section("选整理方式开始（✓ 是上次用的）") {
-                    ForEach(OrganizeStyle.allCases) { st in
-                        Button {
-                            let r = ModelRef(storage: modelChoice)
-                            processor.requestOrganize(rec, style: st, using: r.map { ($0.provider, $0.model) })
-                        } label: {
-                            if !rec.summary.isEmpty && rec.organizedStyle == st.rawValue {
-                                Label(st.label, systemImage: "checkmark")
-                            } else {
-                                Label(st.label, systemImage: st.icon)
-                            }
-                            Text((ModelRef(storage: modelChoice) ?? AppConfig.modelFor(st)).model)
+                            Text(r.provider.label)
                         }
                     }
                 }
-            } label: {
-                actionLabel(icon: "sparkles",
-                            title: rec.summary.isEmpty ? "AI 整理" : "重新整理",
-                            subtitle: organizeSubtitle)
-                    .foregroundStyle(.white)
-                    .background(Theme.aiGradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .opacity(rec.hasSpeech ? 1 : 0.4)
             }
+            .opacity(rec.hasSpeech ? 1 : 0.4)
             .disabled(!rec.hasSpeech)
         }
         .disabled(isBusy)
