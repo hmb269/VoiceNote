@@ -158,7 +158,7 @@ enum WebMDecoder {
                 let n = p.withUnsafeBytes { raw in
                     pcm.withUnsafeMutableBufferPointer { out in
                         opus_decode_float(dec, raw.bindMemory(to: UInt8.self).baseAddress, Int32(p.count),
-                                          out.baseAddress, 5760, 0)
+                                          out.baseAddress!, 5760, 0)
                     }
                 }
                 if n > 0 {
