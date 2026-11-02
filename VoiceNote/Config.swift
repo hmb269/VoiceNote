@@ -51,7 +51,29 @@ enum LLMProvider: String, CaseIterable, Identifiable {
     }
 }
 
+enum OrganizeStyle: String, CaseIterable, Identifiable {
+    case general, meeting, conversation, lecture
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .general: return "通用整理"
+        case .meeting: return "会议纪要"
+        case .conversation: return "谈话/通话"
+        case .lecture: return "课堂/讲座"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .general: return "sparkles"
+        case .meeting: return "person.3"
+        case .conversation: return "bubble.left.and.bubble.right"
+        case .lecture: return "graduationcap"
+        }
+    }
+}
+
 enum SettingsKey {
+    static let organizeStyle = "organizeStyle"
     static let asrEngine = "asrEngine"
     static let appleLocale = "appleLocale"
     static let autoTranscribe = "autoTranscribe"
@@ -97,6 +119,9 @@ enum AppConfig {
     static var aliyunBaseURL: String { nonEmpty(ud.string(forKey: SettingsKey.aliyunBaseURL), defaultAliyunBaseURL) }
     static var aliyunModel: String { nonEmpty(ud.string(forKey: SettingsKey.aliyunModel), defaultAliyunModel) }
     static var aliyunLanguage: String { ud.string(forKey: SettingsKey.aliyunLanguage) ?? "auto" }
+    static var organizeStyle: OrganizeStyle {
+        OrganizeStyle(rawValue: ud.string(forKey: SettingsKey.organizeStyle) ?? "") ?? .general
+    }
     static var llmProvider: LLMProvider {
         LLMProvider(rawValue: ud.string(forKey: SettingsKey.llmProvider) ?? "") ?? .zhipu
     }

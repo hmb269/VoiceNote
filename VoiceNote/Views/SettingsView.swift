@@ -13,6 +13,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.aliyunBaseURL) private var aliyunBaseURL = AppConfig.defaultAliyunBaseURL
     @AppStorage(SettingsKey.aliyunLanguage) private var aliyunLanguage = "auto"
     @AppStorage(SettingsKey.llmProvider) private var providerRaw = LLMProvider.zhipu.rawValue
+    @AppStorage(SettingsKey.organizeStyle) private var styleRaw = OrganizeStyle.general.rawValue
 
     @State private var aliyunKey = ""
     @State private var llmKey = ""
@@ -89,6 +90,9 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker("默认整理方式", selection: $styleRaw) {
+                        ForEach(OrganizeStyle.allCases) { Text($0.label).tag($0.rawValue) }
+                    }
                     Picker("服务商", selection: $providerRaw) {
                         ForEach(LLMProvider.allCases) { Text($0.label).tag($0.rawValue) }
                     }

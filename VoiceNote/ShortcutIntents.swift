@@ -24,6 +24,29 @@ enum ShortcutEngine: String, AppEnum {
     }
 }
 
+enum ShortcutStyle: String, AppEnum {
+    case byDefault, general, meeting, conversation, lecture
+
+    static var typeDisplayRepresentation: TypeDisplayRepresentation = "整理方式"
+    static var caseDisplayRepresentations: [ShortcutStyle: DisplayRepresentation] = [
+        .byDefault: "按 App 设置",
+        .general: "通用整理",
+        .meeting: "会议纪要",
+        .conversation: "谈话/通话",
+        .lecture: "课堂/讲座",
+    ]
+
+    var style: OrganizeStyle {
+        switch self {
+        case .byDefault: return AppConfig.organizeStyle
+        case .general: return .general
+        case .meeting: return .meeting
+        case .conversation: return .conversation
+        case .lecture: return .lecture
+        }
+    }
+}
+
 enum ShortcutContent: String, AppEnum {
     case organized, transcript, title
 
@@ -54,14 +77,15 @@ enum ShortcutWorker {
         }
     }
 
-    static func organize(_ text: String, segments: [TranscriptSegment]) async throws -> String {
+    static func organize(_ text: String, segments: [TranscriptSegment],
+                         style: OrganizeStyle = AppConfig.organizeStyle) async throws -> String {
         let p = AppConfig.llmProvider
         guard let key = Keychain.get(p.keyName) else {
             throw VNError("还没在 App 设置里填 \(p.label) 的 API Key")
         }
         return try await Organizer.organize(transcript: text, segments: segments, provider: p,
                                             apiKey: key, baseURL: AppConfig.llmBaseURL(p),
-                                            model: AppConfig.llmModel(p))
+                                            model: AppConfig.llmModel(p), style: style)
     }
 
     /// 把快捷指令传进来的文件存到录音目录
@@ -98,6 +122,9 @@ struct TranscribeAudioIntent: AppIntent {
     @Parameter(title: "AI 整理", default: false)
     var organize: Bool
 
+    @Parameter(title: "整理方式", default: .byDefault)
+    var style: ShortcutStyle
+
     @Parameter(title: "保存到录音列表", default: true)
     var save: Bool
 
@@ -105,6 +132,7 @@ struct TranscribeAudioIntent: AppIntent {
         Summary("转写\(\.$file)") {
             \.$engine
             \.$organize
+            \.$style
             \.$save
         }
     }
@@ -124,7 +152,7 @@ struct TranscribeAudioIntent: AppIntent {
         let text = segs.map(\.text).joined(separator: "\n")
         var summary = ""
         if organize, !text.isEmpty {
-            summary = try await ShortcutWorker.organize(text, segments: segs)
+            summary = try await ShortcutWorker.organize(text, segments: segs, style: style.style)
         }
 
         if save {
@@ -159,15 +187,18 @@ struct OrganizeTextIntent: AppIntent {
     @Parameter(title: "文字", inputOptions: String.IntentInputOptions(multiline: true))
     var text: String
 
+    @Parameter(title: "整理方式", default: .byDefault)
+    var style: ShortcutStyle
+
     static var parameterSummary: some ParameterSummary {
-        Summary("整理\(\.$text)")
+        Summary("把\(\.$text)整理成\(\.$style)")
     }
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { throw VNError("没有文字可整理") }
-        let md = try await ShortcutWorker.organize(t, segments: [])
+        let md = try await ShortcutWorker.organize(t, segments: [], style: style.style)
         return .result(value: OrganizedParser.stripMarkers(md))
     }
 }

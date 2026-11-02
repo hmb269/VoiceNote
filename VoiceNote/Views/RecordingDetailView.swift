@@ -285,8 +285,27 @@ struct RecordingDetailView: View {
                 .background(Color.primary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
 
-            Button {
-                processor.requestOrganize(rec)
+            Menu {
+                Section("用设置里的模型（\(AppConfig.llmModel(AppConfig.llmProvider))）") {
+                    ForEach(OrganizeStyle.allCases) { st in
+                        Button { processor.requestOrganize(rec, style: st) } label: {
+                            Label(st.label, systemImage: st.icon)
+                        }
+                    }
+                }
+                if !(AppConfig.llmProvider == .deepseek && AppConfig.llmModel(.deepseek) == "deepseek-v4-pro") {
+                    Menu {
+                        ForEach(OrganizeStyle.allCases) { st in
+                            Button {
+                                processor.requestOrganize(rec, style: st, using: (.deepseek, "deepseek-v4-pro"))
+                            } label: {
+                                Label(st.label, systemImage: st.icon)
+                            }
+                        }
+                    } label: {
+                        Label("用 DeepSeek V4 Pro 整理（更强）", systemImage: "bolt.fill")
+                    }
+                }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkles")
@@ -740,7 +759,13 @@ struct OrgSection: Identifiable {
     var lines: [OrganizedLine]
 
     var icon: String {
-        if title.contains("摘要") { return "text.quote" }
+        if title.contains("摘要") || title.contains("概要") { return "text.quote" }
+        if title.contains("议题") { return "bubble.left.and.bubble.right" }
+        if title.contains("决议") { return "checkmark.seal" }
+        if title.contains("分歧") || title.contains("待确认") { return "questionmark.circle" }
+        if title.contains("关键信息") { return "info.circle" }
+        if title.contains("知识点") { return "lightbulb" }
+        if title.contains("重点") { return "exclamationmark.circle" }
         if title.contains("要点") { return "list.bullet" }
         if title.contains("待办") { return "checklist" }
         if title.contains("正文") { return "text.alignleft" }

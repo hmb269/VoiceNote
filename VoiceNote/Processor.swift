@@ -140,8 +140,10 @@ final class Processor: ObservableObject {
         enqueue { await self.transcribe(rec, engine: engine) }
     }
 
-    func requestOrganize(_ rec: Recording) {
-        enqueue { await self.organize(rec) }
+    /// style 为空用设置里的默认方式；model 不为空时临时换用这个服务商和模型
+    func requestOrganize(_ rec: Recording, style: OrganizeStyle? = nil,
+                         using model: (LLMProvider, String)? = nil) {
+        enqueue { await self.organize(rec, style: style ?? AppConfig.organizeStyle, using: model) }
     }
 
     // MARK: 转写
@@ -209,14 +211,16 @@ final class Processor: ObservableObject {
 
     // MARK: 整理
 
-    private func organize(_ rec: Recording) async {
+    private func organize(_ rec: Recording, style: OrganizeStyle = AppConfig.organizeStyle,
+                          using override: (LLMProvider, String)? = nil) async {
         let id = rec.id
         guard !busy.contains(id) else { return }
         guard rec.hasSpeech else {
             rec.errorMessage = "还没有可整理的文字，先转写"
             return
         }
-        let provider = AppConfig.llmProvider
+        let provider = override?.0 ?? AppConfig.llmProvider
+        let modelName = override?.1 ?? AppConfig.llmModel(provider)
         guard let key = Keychain.get(provider.keyName) else {
             rec.errorMessage = "还没填 \(provider.label) 的 API Key，到设置里填"
             rec.status = .failed
@@ -240,7 +244,8 @@ final class Processor: ObservableObject {
                                                   provider: provider,
                                                   apiKey: key,
                                                   baseURL: AppConfig.llmBaseURL(provider),
-                                                  model: AppConfig.llmModel(provider))
+                                                  model: modelName,
+                                                  style: style)
             rec.summary = md
             if let t = Organizer.extractTitle(md) { rec.title = t }
             rec.status = .done
