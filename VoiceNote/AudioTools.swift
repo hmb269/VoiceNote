@@ -36,6 +36,14 @@ enum AudioTools {
         guard let track = tracks.first else {
             throw VNError("系统不认识这个音频格式。微信语音（silk/amr）、opus、wma 这类格式请先用其他 App 转成 m4a 或 mp3 再导入")
         }
+        // 记下编码格式，失败时告诉用户
+        var codec = src.pathExtension.lowercased()
+        if let desc = try? await track.load(.formatDescriptions).first {
+            let sub = CMFormatDescriptionGetMediaSubType(desc)
+            let chars = [24, 16, 8, 0].map { Character(UnicodeScalar(UInt8((sub >> $0) & 0xFF))) }
+            codec += " / " + String(chars).trimmingCharacters(in: .whitespaces)
+        }
+        let codecInfo = codec
         try await Task.detached(priority: .userInitiated) {
             let reader = try AVAssetReader(asset: asset)
             let out = AVAssetReaderTrackOutput(track: track, outputSettings: [
@@ -48,7 +56,7 @@ enum AudioTools {
             ])
             reader.add(out)
             guard reader.startReading() else {
-                throw VNError("解码失败：\(reader.error?.localizedDescription ?? "")")
+                throw VNError("iOS 解不开这个音频（格式：\(codecInfo)）。请先用其他 App 转成 m4a/mp3 再导入，或把文件发给开发者看看")
             }
             let fmt = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
             let file = try AVAudioFile(forWriting: dest, settings: [
@@ -67,7 +75,7 @@ enum AudioTools {
                 try file.write(from: buf)
             }
             if reader.status == .failed {
-                throw VNError("解码失败：\(reader.error?.localizedDescription ?? "")")
+                throw VNError("iOS 解不开这个音频（格式：\(codecInfo)）。请先用其他 App 转成 m4a/mp3 再导入，或把文件发给开发者看看")
             }
         }.value
         guard isReadable(dest) else { throw VNError("转换后的音频还是读不了") }
