@@ -238,7 +238,7 @@ struct RecordingDetailView: View {
             let p = processor.progress[rec.id] ?? 0
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Label("正在转写", systemImage: "waveform.badge.magnifyingglass")
+                    Label(processor.stage[rec.id] ?? "正在转写", systemImage: processor.stage[rec.id] == nil ? "waveform.badge.magnifyingglass" : "person.2.wave.2")
                         .font(.subheadline.weight(.semibold))
                     Spacer()
                     Text("\(Int(p * 100))%")
@@ -246,7 +246,7 @@ struct RecordingDetailView: View {
                         .foregroundStyle(.secondary)
                 }
                 ProgressView(value: p).tint(Theme.accent)
-                Text("可以先去做别的，转完会自动保存")
+                Text(processor.stage[rec.id] == nil ? "可以先去做别的，转完会自动保存" : "文字已经转好并保存了，正在本机分辨谁在说话，录音长的话要几分钟")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

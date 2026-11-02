@@ -351,10 +351,16 @@ enum WhisperFilter {
 
 /// 根据设置里选的转写方式调用对应的服务
 enum Transcription {
-    static func run(_ url: URL, engine: ASREngine, progress: @escaping (Double) -> Void) async throws -> [TranscriptSegment] {
-        let segs = try await recognize(url, engine: engine) { progress($0 * (AppConfig.diarize ? 0.85 : 1)) }
-        guard AppConfig.diarize, ModelPackage.diarization.isReady else { return segs }
-        let labeled = (try? await Diarizer.label(segs, url: url, speakers: AppConfig.speakerCount)) ?? segs
+    /// onTranscribed：文字转完、开始区分说话人之前回调，让调用方先把文字存下来
+    static func run(_ url: URL, engine: ASREngine, progress: @escaping (Double) -> Void,
+                    onTranscribed: (@MainActor ([TranscriptSegment]) -> Void)? = nil) async throws -> [TranscriptSegment] {
+        let diarize = AppConfig.diarize && ModelPackage.diarization.isReady
+        let segs = try await recognize(url, engine: engine) { progress($0 * (diarize ? 0.7 : 1)) }
+        guard diarize else { return segs }
+        await onTranscribed?(segs)
+        let labeled = (try? await Diarizer.label(segs, url: url, speakers: AppConfig.speakerCount) {
+            progress(0.7 + 0.3 * $0)
+        }) ?? segs
         progress(1)
         return labeled
     }

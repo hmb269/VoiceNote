@@ -476,28 +476,59 @@ enum LocalRecognizer {
 
 // MARK: - 区分说话人
 
+/// 给 C 回调传进度用
+private final class DiarizeProgress {
+    let f: (Double) -> Void
+    init(_ f: @escaping (Double) -> Void) { self.f = f }
+}
+
 enum Diarizer {
     /// 给每句话标上说话人编号（从 1 开始）。speakers = 0 表示自动判断人数
-    static func label(_ segs: [TranscriptSegment], url: URL, speakers: Int) async throws -> [TranscriptSegment] {
+    static func label(_ segs: [TranscriptSegment], url: URL, speakers: Int,
+                      progress: @escaping (Double) -> Void = { _ in }) async throws -> [TranscriptSegment] {
         let p = ModelPackage.diarization
         guard p.isReady, !segs.isEmpty else { return segs }
         return try await Task.detached(priority: .userInitiated) {
             var samples: [Float] = []
             try AudioTools.forEach16kMono(url: url) { samples += $0 }
             guard samples.count > 16000 else { return segs }
+            progress(0.02)
 
+            let threads = Int32(max(2, min(4, ProcessInfo.processInfo.activeProcessorCount - 2)))
             var config = sherpaOnnxOfflineSpeakerDiarizationConfig(
                 segmentation: sherpaOnnxOfflineSpeakerSegmentationModelConfig(
                     pyannote: sherpaOnnxOfflineSpeakerSegmentationPyannoteModelConfig(
                         model: p.path("segmentation.onnx"), windowShiftRatio: 0.1),
-                    numThreads: 2),
-                embedding: sherpaOnnxSpeakerEmbeddingExtractorConfig(model: p.path("embedding.onnx"), numThreads: 2),
+                    numThreads: Int(threads)),
+                embedding: sherpaOnnxSpeakerEmbeddingExtractorConfig(model: p.path("embedding.onnx"), numThreads: Int(threads)),
                 clustering: sherpaOnnxFastClusteringConfig(numClusters: speakers > 0 ? speakers : -1, threshold: 0.8)
             )
-            let sd = SherpaOnnxOfflineSpeakerDiarizationWrapper(config: &config)
-            let turns = sd.process(samples: samples)
-            guard !turns.isEmpty else { return segs }
+            guard let sd = SherpaOnnxCreateOfflineSpeakerDiarization(&config) else { return segs }
+            defer { SherpaOnnxDestroyOfflineSpeakerDiarization(sd) }
 
+            let box = DiarizeProgress { progress(0.02 + 0.96 * $0) }
+            let arg = Unmanaged.passRetained(box).toOpaque()
+            defer { Unmanaged<DiarizeProgress>.fromOpaque(arg).release() }
+            let result = samples.withUnsafeBufferPointer { buf in
+                SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback(
+                    sd, buf.baseAddress, Int32(buf.count),
+                    { done, total, arg in
+                        if let arg, total > 0 {
+                            Unmanaged<DiarizeProgress>.fromOpaque(arg).takeUnretainedValue()
+                                .f(Double(done) / Double(total))
+                        }
+                        return 0
+                    }, arg)
+            }
+            guard let result else { return segs }
+            defer { SherpaOnnxOfflineSpeakerDiarizationDestroyResult(result) }
+            let n = Int(SherpaOnnxOfflineSpeakerDiarizationResultGetNumSegments(result))
+            guard n > 0, let sorted = SherpaOnnxOfflineSpeakerDiarizationResultSortByStartTime(result) else { return segs }
+            defer { SherpaOnnxOfflineSpeakerDiarizationDestroySegment(sorted) }
+            let turns: [(start: Float, end: Float, speaker: Int)] = (0..<n).map {
+                (sorted[$0].start, sorted[$0].end, Int(sorted[$0].speaker))
+            }
+            progress(1)
             let assigned: [Int] = segs.map { seg in
                 var best = -1
                 var bestOverlap = 0.0

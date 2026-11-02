@@ -15,6 +15,8 @@ final class Processor: ObservableObject {
 
     var container: ModelContainer? = DataStore.shared
     @Published var progress: [UUID: Double] = [:]
+    /// 转写阶段说明，比如「区分说话人」
+    @Published var stage: [UUID: String] = [:]
     @Published var busy: Set<UUID> = [] {
         didSet { BackgroundKeeper.shared.update(active: !busy.isEmpty) }
     }
@@ -301,12 +303,20 @@ final class Processor: ObservableObject {
             Task { @MainActor in Processor.shared.progress[id] = p }
         }
         do {
-            let segs = try await Transcription.run(url, engine: engine, progress: report)
+            let segs = try await Transcription.run(url, engine: engine, progress: report) { segs in
+                // 文字先存下来，区分说话人慢或失败都不影响
+                rec.segments = segs
+                rec.engineUsed = engine.shortLabel
+                self.stage[id] = "正在区分说话人"
+                self.save()
+            }
+            stage[id] = nil
             rec.segments = segs
             ChunkCache.clear(url)
             rec.engineUsed = engine.shortLabel
             rec.status = .done
         } catch {
+            stage[id] = nil
             rec.status = .failed
             rec.errorMessage = "转写失败：\(error.localizedDescription)"
         }
