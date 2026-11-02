@@ -7,6 +7,9 @@ options:
   createIntermediateGroups: true
 
 packages:
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation
+    exactVersion: 0.9.19
   SherpaOnnx:
     url: https://github.com/k2-fsa/sherpa-onnx
     exactVersion: 2.0.1
@@ -65,6 +68,7 @@ targets:
       - sdk: libbz2.tbd
       - package: SherpaOnnx
         product: sherpa-onnx
+      - package: ZIPFoundation
       - target: VoiceNoteWatch
         embed: true
         codeSign: false

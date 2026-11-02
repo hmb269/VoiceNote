@@ -22,6 +22,33 @@ final class Processor: ObservableObject {
     @Published var organizeInfo: [UUID: String] = [:]
     /// 正在总结重点的录音
     @Published var summarizing: Set<UUID> = []
+    /// 正在填会议记录表的录音，值是进度说明
+    @Published var formFilling: [UUID: String] = [:]
+
+    func fillForm(_ rec: Recording, template: WordTemplate, using ref: ModelRef? = nil) {
+        let id = rec.id
+        guard formFilling[id] == nil else { return }
+        guard rec.hasSpeech else { lastError = "先转写，再填表"; return }
+        let r = ref ?? AppConfig.modelFor(.meeting)
+        formFilling[id] = "正在连接 \(r.model)…"
+        Task { @MainActor in
+            defer { self.formFilling[id] = nil }
+            do {
+                let form = try await FormFiller.fill(template: template, rec: rec, ref: r) { text, thinking in
+                    Task { @MainActor in
+                        guard self.formFilling[id] != nil else { return }
+                        self.formFilling[id] = text.isEmpty ? (thinking > 0 ? "模型在思考…" : "等待模型回复…")
+                                                            : "正在填写，已写 \(text.count) 字"
+                    }
+                }
+                rec.filledForm = form
+                self.save()
+                self.showToast("会议记录表已填好")
+            } catch {
+                self.lastError = "填表失败：\(error.localizedDescription)"
+            }
+        }
+    }
 
     func summarizeHighlights(_ rec: Recording, using override: ModelRef? = nil) {
         let id = rec.id
@@ -305,6 +332,9 @@ final class Processor: ObservableObject {
             rec.summary = md
             rec.organizedModel = modelName
             rec.organizedStyle = style.rawValue
+            if style == .meeting, TemplateStore.autoFill, let t = TemplateStore.defaultTemplate {
+                fillForm(rec, template: t, using: ModelRef(provider, modelName))
+            }
             if let t = Organizer.extractTitle(md) { rec.title = t }
             rec.status = .done
         } catch {

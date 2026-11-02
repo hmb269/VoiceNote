@@ -44,6 +44,12 @@ final class Recording {
     var highlightsData: Data? = nil
     var highlightSummary: String = ""
     var organizedModel: String = ""
+    var formData: Data? = nil
+
+    var filledForm: FilledForm? {
+        get { formData.flatMap { try? JSONDecoder().decode(FilledForm.self, from: $0) } }
+        set { formData = newValue.flatMap { try? JSONEncoder().encode($0) } }
+    }
     var organizedStyle: String = ""
 
     var highlights: [Highlight] {

@@ -57,14 +57,15 @@ struct CoverArt: View {
 
 /// 系统文件选择器，选中后由系统先拷贝一份给 App，不受权限限制
 struct DocumentPicker: UIViewControllerRepresentable {
+    var types: [UTType] = [.audio, .mpeg4Audio, .mp3, .wav, .aiff, .mpeg4Movie, .quickTimeMovie]
+    var multiple = true
     var onPick: ([URL]) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let types: [UTType] = [.audio, .mpeg4Audio, .mp3, .wav, .aiff, .mpeg4Movie, .quickTimeMovie]
         let vc = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
-        vc.allowsMultipleSelection = true
+        vc.allowsMultipleSelection = multiple
         vc.delegate = context.coordinator
         return vc
     }

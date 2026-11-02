@@ -29,6 +29,7 @@ struct RecordingDetailView: View {
     @AppStorage("organizeModelChoice") private var modelChoice = ""
     @State private var pickedEngine: ASREngine?
     @State private var pickedStyle: OrganizeStyle?
+    @State private var showAllForm = false
 
     private var isBusy: Bool { processor.busy.contains(rec.id) }
 
@@ -638,7 +639,88 @@ struct RecordingDetailView: View {
         }
     }
 
+    @ViewBuilder private var formCard: some View {
+        let filling = processor.formFilling[rec.id]
+        let templates = TemplateStore.all
+        if let form = rec.filledForm {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("会议记录表 · \(form.templateName)", systemImage: "tablecells.fill")
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(.indigo)
+                    Spacer()
+                    if filling != nil { ProgressView().scaleEffect(0.7) }
+                }
+                ForEach(form.fields.prefix(showAllForm ? form.fields.count : 4)) { f in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(f.label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        Text((form.values[f.id] ?? "").isEmpty ? "（留空）" : (form.values[f.id] ?? ""))
+                            .font(.subheadline)
+                            .lineLimit(showAllForm ? nil : 2)
+                    }
+                }
+                if form.fields.count > 4 {
+                    Button(showAllForm ? "收起" : "展开全部 \(form.fields.count) 个栏目") {
+                        withAnimation(.snappy) { showAllForm.toggle() }
+                    }
+                    .font(.footnote.weight(.semibold))
+                }
+                HStack(spacing: 10) {
+                    Button {
+                        if let u = FormFiller.exportCopy(form, title: rec.title) { shareItem = ShareItem(items: [u]) }
+                    } label: {
+                        Label("导出 Word", systemImage: "square.and.arrow.up")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: 40)
+                            .background(Color.indigo, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .foregroundStyle(.white)
+                    }
+                    Menu {
+                        ForEach(templates) { t in
+                            Button(t.name) { processor.fillForm(rec, template: t, using: effectiveModel) }
+                        }
+                    } label: {
+                        Label("重新填写", systemImage: "arrow.clockwise")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: 40)
+                            .background(Color.indigo.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .foregroundStyle(.indigo)
+                    }
+                    .disabled(filling != nil || templates.isEmpty)
+                }
+                .buttonStyle(.plain)
+                if let filling { Text(filling).font(.caption).foregroundStyle(.secondary) }
+            }
+            .padding(16)
+            .background(Color.indigo.opacity(0.07), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.indigo.opacity(0.2), lineWidth: 1))
+        } else if !templates.isEmpty && rec.hasSpeech {
+            Menu {
+                Section("用哪个模板（模型：\(effectiveModel.model)）") {
+                    ForEach(templates) { t in
+                        Button(t.name) { processor.fillForm(rec, template: t, using: effectiveModel) }
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    if filling != nil { ProgressView().tint(.indigo) } else { Image(systemName: "tablecells.fill") }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(filling == nil ? "填会议记录表" : "正在填会议记录表").font(.subheadline.weight(.bold))
+                        Text(filling ?? "按你导入的 Word 模板自动填好，可导出").font(.caption).opacity(0.8)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption.weight(.bold))
+                }
+                .foregroundStyle(.indigo)
+                .padding(14)
+                .background(Color.indigo.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .disabled(filling != nil)
+        }
+    }
+
     @ViewBuilder private var organizedContent: some View {
+        formCard
         if rec.summary.isEmpty {
             EmptyHint(icon: "sparkles",
                       title: "还没整理",

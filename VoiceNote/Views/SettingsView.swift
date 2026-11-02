@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - 设置首页
 
@@ -57,6 +58,12 @@ struct SettingsView: View {
                     } label: {
                         SettingRow(icon: "square.stack.3d.up.fill", tint: .teal, title: "按整理方式指定模型",
                                    value: customizedCount == 0 ? "都用默认" : "\(customizedCount) 种单独指定")
+                    }
+                    NavigationLink {
+                        TemplatesView()
+                    } label: {
+                        SettingRow(icon: "tablecells.fill", tint: .indigo, title: "会议记录表模板",
+                                   value: TemplateStore.all.isEmpty ? "未导入" : "\(TemplateStore.all.count) 个")
                     }
                     Picker(selection: $styleRaw) {
                         ForEach(OrganizeStyle.allCases) { Text($0.label).tag($0.rawValue) }
@@ -930,5 +937,134 @@ struct LocalModelsView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - 会议记录表模板（Word）
+
+struct TemplatesView: View {
+    @State private var templates = TemplateStore.all
+    @State private var defaultID = TemplateStore.defaultID
+    @AppStorage(TemplateStore.autoFillKey) private var autoFill = false
+    @State private var showPicker = false
+    @State private var error: String?
+
+    var body: some View {
+        List {
+            Section {
+                Text("导入你单位固定格式的会议记录表（Word .docx）。汀汀会自动找出表格里要填的空格子，录音整理后让 AI 按栏目填好，导出一份同样格式的 Word。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                ForEach(templates) { t in
+                    NavigationLink {
+                        TemplateDetailView(template: t)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "doc.richtext.fill")
+                                .font(.title3)
+                                .foregroundStyle(.blue)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(t.name).font(.body.weight(.semibold))
+                                Text("\(t.fields.count) 个栏目：" + t.fields.prefix(4).map(\.label).joined(separator: "、") + (t.fields.count > 4 ? "…" : ""))
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer()
+                            if t.id == (defaultID ?? templates.first?.id) {
+                                Text("默认").font(.caption2.weight(.bold))
+                                    .foregroundStyle(Theme.ai)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Theme.ai.opacity(0.12), in: Capsule())
+                            }
+                        }
+                    }
+                    .swipeActions {
+                        Button(role: .destructive) {
+                            TemplateStore.remove(t)
+                            reload()
+                        } label: { Label("删除", systemImage: "trash") }
+                        Button {
+                            TemplateStore.defaultID = t.id
+                            reload()
+                        } label: { Label("设为默认", systemImage: "star") }
+                        .tint(.orange)
+                    }
+                }
+                Button {
+                    showPicker = true
+                } label: {
+                    Label("导入 Word 模板（.docx）", systemImage: "square.and.arrow.down")
+                }
+                if let error {
+                    Text(error).font(.footnote).foregroundStyle(.red)
+                }
+            } header: {
+                Text("模板")
+            } footer: {
+                Text("模板要求：用表格做，栏目名写在格子里（如「会议主题」「参会人员」「会议内容」），要填的地方留空格子，或者写成「会议内容：」把内容写在同一格。左滑可设默认或删除。")
+            }
+
+            Section {
+                Toggle("用「会议纪要」整理后自动填表", isOn: $autoFill)
+                    .disabled(templates.isEmpty)
+            } footer: {
+                Text("打开后，选「会议纪要」整理完会自动用默认模板填一份；也可以在录音的整理页手动点「填会议记录表」。")
+            }
+        }
+        .navigationTitle("会议记录表模板")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showPicker) {
+            DocumentPicker(types: [UTType(filenameExtension: "docx") ?? .data], multiple: false) { urls in
+                guard let u = urls.first else { return }
+                do {
+                    _ = try TemplateStore.importTemplate(u)
+                    error = nil
+                    reload()
+                } catch {
+                    self.error = error.localizedDescription
+                }
+            }
+            .ignoresSafeArea()
+        }
+        .onAppear(perform: reload)
+    }
+
+    private func reload() {
+        templates = TemplateStore.all
+        defaultID = TemplateStore.defaultID
+    }
+}
+
+struct TemplateDetailView: View {
+    let template: WordTemplate
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(template.fields) { f in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(f.label)
+                        if !f.context.isEmpty {
+                            Text("同一行：\(f.context)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                }
+            } header: {
+                Text("识别到 \(template.fields.count) 个要填的栏目")
+            } footer: {
+                Text("如果少了栏目或多了不该填的，检查 Word 里对应的格子：要填的格子留空，栏目名写在它左边或上面的格子里。")
+            }
+            Section {
+                Button {
+                    TemplateStore.defaultID = template.id
+                } label: {
+                    Label("设为默认模板", systemImage: "star")
+                }
+            }
+        }
+        .navigationTitle(template.name)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
