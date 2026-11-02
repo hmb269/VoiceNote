@@ -13,6 +13,9 @@ packages:
   SherpaOnnx:
     url: https://github.com/k2-fsa/sherpa-onnx
     exactVersion: 2.0.1
+  Opus:
+    url: https://github.com/alta/swift-opus
+    revision: 6f3cb6bd3ffed1fe5f06d00a962d5c191a50daf8
 
 settings:
   base:
@@ -69,6 +72,8 @@ targets:
       - package: SherpaOnnx
         product: sherpa-onnx
       - package: ZIPFoundation
+      - package: Opus
+        product: Copus
       - target: VoiceNoteWatch
         embed: true
         codeSign: false

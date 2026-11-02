@@ -1,4 +1,5 @@
 import AVFoundation
+import Copus
 
 /// 解 WebM / MKA（网页录音、网页版会议常见）：自己拆 Matroska 容器，Opus 交给系统解码
 enum WebMDecoder {
@@ -120,57 +121,56 @@ enum WebMDecoder {
             guard track.codec == "A_OPUS" else {
                 throw VNError("这个 WebM 里的声音是 \(track.codec) 编码，暂时解不了，请先转成 mp3/m4a 再导入")
             }
-            let ch = UInt32(min(track.channels, 2))
-            var asbd = AudioStreamBasicDescription(
-                mSampleRate: 48000, mFormatID: kAudioFormatOpus, mFormatFlags: 0,
-                mBytesPerPacket: 0, mFramesPerPacket: 960, mBytesPerFrame: 0,
-                mChannelsPerFrame: ch, mBitsPerChannel: 0, mReserved: 0)
-            guard let inFmt = AVAudioFormat(streamDescription: &asbd),
-                  let outFmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000,
-                                             channels: AVAudioChannelCount(ch), interleaved: false),
-                  let conv = AVAudioConverter(from: inFmt, to: outFmt) else {
-                throw VNError("系统的 Opus 解码器打不开")
+            _ = track
+            // 用内置 libopus 解码，直接解成单声道 48kHz（立体声会自动混成单声道）
+            var err: Int32 = 0
+            guard let dec = opus_decoder_create(48000, 1, &err), err == 0 else {
+                throw VNError("Opus 解码器初始化失败（\(err)）")
             }
+            defer { opus_decoder_destroy(dec) }
+            guard let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000,
+                                          channels: 1, interleaved: false) else { throw VNError("内存不足") }
             let file = try AVAudioFile(forWriting: dest, settings: [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: 48000,
-                AVNumberOfChannelsKey: ch,
-                AVEncoderBitRateKey: ch == 1 ? 64000 : 96000,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: 64000,
             ], commonFormat: .pcmFormatFloat32, interleaved: false)
 
-            var pending: Data? = first
-            var done = false
-            var wrote: AVAudioFramePosition = 0
-            while !done {
-                guard let out = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: 48000) else { break }
-                var err: NSError?
-                let status = conv.convert(to: out, error: &err) { _, st in
-                    guard let pkt = pending else {
-                        done = true
-                        st.pointee = .endOfStream
-                        return nil
-                    }
-                    pending = demux.next()
-                    let buf = AVAudioCompressedBuffer(format: inFmt, packetCapacity: 1,
-                                                      maximumPacketSize: max(pkt.count, 1))
-                    pkt.withUnsafeBytes { raw in
-                        buf.data.copyMemory(from: raw.baseAddress!, byteCount: pkt.count)
-                    }
-                    buf.packetDescriptions?[0] = AudioStreamPacketDescription(
-                        mStartOffset: 0, mVariableFramesInPacket: 0, mDataByteSize: UInt32(pkt.count))
-                    buf.packetCount = 1
-                    buf.byteLength = UInt32(pkt.count)
-                    st.pointee = .haveData
-                    return buf
+            var pcm = [Float](repeating: 0, count: 5760)
+            var batch: [Float] = []
+            batch.reserveCapacity(200_000)
+            var wrote = 0
+            var bad = 0
+            func flush() throws {
+                guard !batch.isEmpty,
+                      let b = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(batch.count)) else { return }
+                b.frameLength = AVAudioFrameCount(batch.count)
+                batch.withUnsafeBufferPointer { p in
+                    b.floatChannelData![0].update(from: p.baseAddress!, count: batch.count)
                 }
-                if let err { throw VNError("Opus 解码失败：\(err.localizedDescription)") }
-                if out.frameLength > 0 {
-                    try file.write(from: out)
-                    wrote += AVAudioFramePosition(out.frameLength)
-                }
-                if status == .endOfStream || status == .error { break }
+                try file.write(from: b)
+                wrote += batch.count
+                batch.removeAll(keepingCapacity: true)
             }
-            if wrote == 0 { throw VNError("WebM 解码后没有声音") }
+            var pkt: Data? = first
+            while let p = pkt {
+                let n = p.withUnsafeBytes { raw in
+                    pcm.withUnsafeMutableBufferPointer { out in
+                        opus_decode_float(dec, raw.bindMemory(to: UInt8.self).baseAddress, Int32(p.count),
+                                          out.baseAddress, 5760, 0)
+                    }
+                }
+                if n > 0 {
+                    batch.append(contentsOf: pcm[0..<Int(n)])
+                    if batch.count >= 192_000 { try flush() }
+                } else {
+                    bad += 1
+                }
+                pkt = demux.next()
+            }
+            try flush()
+            if wrote == 0 { throw VNError("WebM 解码后没有声音（坏包 \(bad) 个）") }
         }.value
     }
 }
