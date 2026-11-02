@@ -54,10 +54,11 @@ struct RecordingDetailView: View {
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
         .overlay(alignment: .bottomTrailing) {
             MiniPlayer(player: player, singleSentence: $singleSentence, showFull: $showFullPlayer)
-                .padding(.trailing, 18)
-                .padding(.bottom, 10)
+                .padding(.trailing, 6)
+                .padding(.bottom, 0)
         }
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         .toolbar { toolbarMenu }
         .alert("改标题", isPresented: $renaming) {
             TextField("标题", text: $newTitle)
@@ -191,22 +192,30 @@ struct RecordingDetailView: View {
     // MARK: 头部
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(rec.title)
-                .font(.system(.title2, design: .rounded).weight(.bold))
-                .fixedSize(horizontal: false, vertical: true)
-                .onTapGesture {
-                    newTitle = rec.title
-                    renaming = true
-                }
-            Text(rec.createdAt, format: .dateTime.year().month().day().weekday().hour().minute())
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            HStack(spacing: 8) {
-                Chip(icon: rec.source.icon, text: rec.source.label)
-                Chip(icon: "clock", text: formatDuration(rec.duration))
-                if !rec.engineUsed.isEmpty {
-                    Chip(icon: "waveform", text: rec.engineUsed)
+        HStack(alignment: .center, spacing: 16) {
+            CoverArt(seed: rec.id, cornerRadius: 22, barCount: 12)
+                .frame(width: 92, height: 92)
+                .shadow(color: .black.opacity(0.2), radius: 12, y: 6)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(rec.title)
+                    .font(.system(.title3, design: .rounded).weight(.bold))
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onTapGesture {
+                        newTitle = rec.title
+                        renaming = true
+                    }
+                Text(rec.createdAt, format: .dateTime.month().day().weekday().hour().minute())
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Chip(icon: rec.source.icon, text: formatDuration(rec.duration))
+                    if !rec.engineUsed.isEmpty {
+                        Chip(icon: "waveform", text: rec.engineUsed)
+                    }
+                    if rec.isFavorite {
+                        Chip(icon: "star.fill", text: "收藏", tint: .yellow)
+                    }
                 }
             }
         }
@@ -485,6 +494,18 @@ struct RecordingDetailView: View {
 
     @ToolbarContentBuilder private var toolbarMenu: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                withAnimation(.spring(duration: 0.3)) { rec.isFavorite.toggle() }
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                showToast(rec.isFavorite ? "已收藏" : "已取消收藏")
+            } label: {
+                Image(systemName: rec.isFavorite ? "star.fill" : "star")
+                    .foregroundStyle(rec.isFavorite ? Color.yellow : Color.primary)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .accessibilityLabel(rec.isFavorite ? "取消收藏" : "收藏")
+        }
+        ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Button { copy(exportText) } label: { Label("复制全部文字", systemImage: "doc.on.doc") }
                 ShareLink(item: exportText) { Label("分享文字", systemImage: "text.quote") }
@@ -543,73 +564,102 @@ struct MiniPlayer: View {
         player.duration > 0 ? min(1, player.current / player.duration) : 0
     }
 
-    var body: some View {
-        HStack(spacing: 10) {
-            if player.isPlaying || player.current > 0 {
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(formatDuration(player.current))
-                        .font(.footnote.weight(.semibold).monospacedDigit())
-                    Text(player.rate == 1 ? formatDuration(player.duration) : String(format: "%g×", player.rate))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .glassBackground(cornerRadius: 18)
-                .onTapGesture { showFull = true }
-                .transition(.move(edge: .trailing).combined(with: .opacity))
-            }
+    private let size: CGFloat = 80
+    private let ring: CGFloat = 5
 
-            ZStack {
-                Circle()
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 3)
-                Circle()
-                    .trim(from: 0, to: progress)
-                    .stroke(Theme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
+    var body: some View {
+        let r = (size - ring) / 2
+        let angle = progress * 2 * .pi - .pi / 2
+        let started = player.isPlaying || player.current > 0
+
+        ZStack {
+            // 底盘
+            Circle()
+                .fill(.clear)
+                .frame(width: size + 10, height: size + 10)
+                .glassBackground(cornerRadius: (size + 10) / 2)
+                .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+
+            // 外环：播放进度
+            Circle()
+                .stroke(Color.primary.opacity(0.10), lineWidth: ring)
+                .frame(width: size - ring, height: size - ring)
+            Circle()
+                .trim(from: 0, to: max(0.0001, progress))
+                .stroke(AngularGradient(colors: [Theme.accent.opacity(0.55), Theme.accent],
+                                        center: .center,
+                                        startAngle: .degrees(-90),
+                                        endAngle: .degrees(-90 + 360 * max(0.01, progress))),
+                        style: StrokeStyle(lineWidth: ring, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .frame(width: size - ring, height: size - ring)
+
+            // 内圈：播放键 + 总时长
+            VStack(spacing: 2) {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 19, weight: .semibold))
+                    .font(.system(size: 17, weight: .bold))
+                    .contentTransition(.symbolEffect(.replace))
+                Text(formatDuration(player.duration))
+                    .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            .foregroundStyle(.white)
+            .frame(width: size - ring * 2 - 8, height: size - ring * 2 - 8)
+            .background(Theme.recordGradient, in: Circle())
+
+            // 外环上跟着走的当前时间
+            if started {
+                Text(formatDuration(player.current))
+                    .font(.system(size: 10, weight: .bold, design: .rounded).monospacedDigit())
                     .foregroundStyle(.white)
-                    .offset(x: player.isPlaying ? 0 : 1.5)
-                    .frame(width: 48, height: 48)
-                    .background(Theme.recordGradient, in: Circle())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Theme.accent, in: Capsule())
+                    .overlay(Capsule().stroke(.white.opacity(0.9), lineWidth: 1.5))
+                    .offset(x: r * cos(angle), y: r * sin(angle))
+                    .transition(.scale.combined(with: .opacity))
             }
-            .frame(width: 58, height: 58)
-            .padding(4)
-            .glassBackground(cornerRadius: 33)
-            .shadow(color: Theme.accent.opacity(0.25), radius: 12, y: 5)
-            .contentShape(Circle())
-            .onTapGesture {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                player.toggle()
+            if player.rate != 1 {
+                Text(String(format: "%g×", player.rate))
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .offset(x: -size / 2 - 6, y: size / 2 - 6)
             }
-            .contextMenu {
-                Button { player.skip(-15) } label: { Label("后退 15 秒", systemImage: "gobackward.15") }
-                Button { player.skip(15) } label: { Label("前进 15 秒", systemImage: "goforward.15") }
-                Menu {
-                    ForEach(AudioPlayerModel.rates, id: \.self) { r in
-                        Button {
-                            player.setRate(r)
-                        } label: {
-                            if r == player.rate {
-                                Label(String(format: "%g×", r), systemImage: "checkmark")
-                            } else {
-                                Text(String(format: "%g×", r))
-                            }
+        }
+        .frame(width: size + 24, height: size + 24)
+        .contentShape(Circle())
+        .onTapGesture {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            player.toggle()
+        }
+        .contextMenu {
+            Button { player.skip(-15) } label: { Label("后退 15 秒", systemImage: "gobackward.15") }
+            Button { player.skip(15) } label: { Label("前进 15 秒", systemImage: "goforward.15") }
+            Menu {
+                ForEach(AudioPlayerModel.rates, id: \.self) { r in
+                    Button {
+                        player.setRate(r)
+                    } label: {
+                        if r == player.rate {
+                            Label(String(format: "%g×", r), systemImage: "checkmark")
+                        } else {
+                            Text(String(format: "%g×", r))
                         }
                     }
-                } label: {
-                    Label("倍速 \(String(format: "%g×", player.rate))", systemImage: "speedometer")
                 }
-                Toggle(isOn: $singleSentence) {
-                    Label("点一句只播一句", systemImage: "text.line.first.and.arrowtriangle.forward")
-                }
-                Divider()
-                Button { showFull = true } label: { Label("展开播放器", systemImage: "waveform") }
+            } label: {
+                Label("倍速 \(String(format: "%g×", player.rate))", systemImage: "speedometer")
             }
-            .accessibilityLabel(player.isPlaying ? "暂停" : "播放")
+            Toggle(isOn: $singleSentence) {
+                Label("点一句只播一句", systemImage: "text.line.first.and.arrowtriangle.forward")
+            }
+            Divider()
+            Button { showFull = true } label: { Label("展开播放器（波形、拖动）", systemImage: "waveform") }
         }
-        .animation(.spring(duration: 0.35), value: player.isPlaying || player.current > 0)
+        .accessibilityLabel(player.isPlaying ? "暂停" : "播放")
+        .animation(.spring(duration: 0.35), value: started)
     }
 }
 

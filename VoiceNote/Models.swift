@@ -40,6 +40,7 @@ final class Recording {
     var engineUsed: String
     var autoPending: Bool
     var segmentsData: Data? = nil
+    var isFavorite: Bool = false
 
     init(title: String, createdAt: Date, duration: Double, fileName: String, source: RecordingSource) {
         self.id = UUID()

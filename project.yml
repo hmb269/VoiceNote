@@ -2,7 +2,7 @@ name: VoiceNote
 options:
   bundleIdPrefix: com.hmb269
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "18.0"
     watchOS: "10.0"
   createIntermediateGroups: true
 

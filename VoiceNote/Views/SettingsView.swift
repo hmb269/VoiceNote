@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    var showDone = true
+    @AppStorage("appearance") private var appearance = 1
 
     @AppStorage(SettingsKey.asrEngine) private var engine = ASREngine.apple.rawValue
     @AppStorage(SettingsKey.appleLocale) private var appleLocale = "zh-CN"
@@ -129,6 +131,15 @@ struct SettingsView: View {
                     Text("智谱在 open.bigmodel.cn → API Keys 创建，glm-5.3-flash 用新用户送的资源包；DeepSeek 在 platform.deepseek.com 创建。")
                 }
 
+                Section("外观") {
+                    Picker("主题", selection: $appearance) {
+                        Text("深色").tag(1)
+                        Text("浅色").tag(2)
+                        Text("跟随系统").tag(0)
+                    }
+                    .pickerStyle(.segmented)
+                }
+
                 Section("关于") {
                     LabeledContent("版本", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-")
                     Text("API Key 只存在这台手机的钥匙串里，请求直接从手机发到你填的地址。")
@@ -139,8 +150,10 @@ struct SettingsView: View {
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
+                if showDone {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("完成") { dismiss() }
+                    }
                 }
             }
             .onAppear(perform: loadAll)

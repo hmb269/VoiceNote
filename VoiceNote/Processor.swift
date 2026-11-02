@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import SwiftData
 import UIKit
@@ -11,6 +12,15 @@ final class Processor: ObservableObject {
     @Published var progress: [UUID: Double] = [:]
     @Published var busy: Set<UUID> = []
     @Published var lastError: String?
+    @Published var toast: String?
+
+    func showToast(_ text: String) {
+        toast = text
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            if self.toast == text { self.toast = nil }
+        }
+    }
 
     private var chain: Task<Void, Never>?
 
@@ -48,21 +58,53 @@ final class Processor: ObservableObject {
         }
     }
 
+    func importFiles(_ urls: [URL]) {
+        Task { @MainActor in
+            var ok = 0
+            for u in urls {
+                if await importOne(u) { ok += 1 }
+            }
+            if ok > 0 { showToast(ok == 1 ? "已导入，正在转写" : "已导入 \(ok) 个，正在转写") }
+        }
+    }
+
     func importFile(_ url: URL) {
+        importFiles([url])
+    }
+
+    private func importOne(_ url: URL) async -> Bool {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        let ext = url.pathExtension.isEmpty ? "m4a" : url.pathExtension.lowercased()
-        let name = "\(UUID().uuidString).\(ext)"
+        let ext = url.pathExtension.lowercased()
+        let created = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
+        let title = url.deletingPathExtension().lastPathComponent
+        let isVideo = ["mp4", "mov", "m4v"].contains(ext)
+        let name = "\(UUID().uuidString).\(isVideo || ext.isEmpty ? "m4a" : ext)"
         let dest = Storage.recordingsDir.appendingPathComponent(name)
         do {
-            try FileManager.default.copyItem(at: url, to: dest)
+            if isVideo {
+                // 视频先抽出音轨
+                let asset = AVURLAsset(url: url)
+                guard let s = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+                    throw VNError("这个视频没有音轨")
+                }
+                s.outputURL = dest
+                s.outputFileType = .m4a
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    s.exportAsynchronously { c.resume() }
+                }
+                guard s.status == .completed else {
+                    throw VNError(s.error?.localizedDescription ?? "提取音频失败")
+                }
+            } else {
+                try FileManager.default.copyItem(at: url, to: dest)
+            }
         } catch {
-            lastError = "导入失败：\(error.localizedDescription)"
-            return
+            lastError = "导入「\(title)」失败：\(error.localizedDescription)"
+            return false
         }
-        let created = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
-        ingest(fileName: name, source: .imported, createdAt: created,
-               title: url.deletingPathExtension().lastPathComponent)
+        ingest(fileName: name, source: .imported, createdAt: created, title: title)
+        return true
     }
 
     /// App 回到前台时：修复中断的状态，补跑手表传来但还没处理的录音
