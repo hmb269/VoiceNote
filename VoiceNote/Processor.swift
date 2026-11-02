@@ -8,7 +8,7 @@ import UIKit
 final class Processor: ObservableObject {
     static let shared = Processor()
 
-    var container: ModelContainer?
+    var container: ModelContainer? = DataStore.shared
     @Published var progress: [UUID: Double] = [:]
     @Published var busy: Set<UUID> = []
     @Published var lastError: String?

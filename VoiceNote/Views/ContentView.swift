@@ -13,7 +13,7 @@ struct ContentView: View {
     @State private var lastTab: RootTab = .home
     @State private var alertText: String?
     @State private var showPicker = false
-    @StateObject private var recorder = PhoneRecorder()
+    @ObservedObject private var recorder = PhoneRecorder.shared
 
     /// 「录音」「导入」是动作，不切页面
     private var selection: Binding<RootTab> {

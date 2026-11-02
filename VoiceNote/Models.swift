@@ -107,6 +107,17 @@ struct TranscriptSegment: Codable, Identifiable, Hashable {
     func contains(_ t: Double) -> Bool { t >= start && t < end }
 }
 
+enum DataStore {
+    /// App 和快捷指令共用同一个数据库
+    static let shared: ModelContainer = {
+        do {
+            return try ModelContainer(for: Recording.self)
+        } catch {
+            fatalError("数据库打开失败：\(error)")
+        }
+    }()
+}
+
 enum Storage {
     static var recordingsDir: URL {
         let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]

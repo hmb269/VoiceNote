@@ -3,6 +3,8 @@ import UIKit
 
 @MainActor
 final class PhoneRecorder: ObservableObject {
+    static let shared = PhoneRecorder()
+
     @Published var isRecording = false
     @Published var elapsed: TimeInterval = 0
     @Published var level: Float = 0

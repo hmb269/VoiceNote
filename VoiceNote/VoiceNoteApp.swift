@@ -8,11 +8,7 @@ struct VoiceNoteApp: App {
 
     init() {
         AppConfig.registerDefaults()
-        do {
-            container = try ModelContainer(for: Recording.self)
-        } catch {
-            fatalError("数据库打开失败：\(error)")
-        }
+        container = DataStore.shared
         Processor.shared.container = container
         PhoneSession.shared.activate()
     }
