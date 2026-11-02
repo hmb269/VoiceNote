@@ -611,7 +611,7 @@ struct ASRSettingsView: View {
                     NavigationLink("去下载区分说话人模型") { LocalModelsView() }
                 }
             } footer: {
-                Text("打开后，原文每句会标上「说话人1 / 说话人2」，AI 整理会议纪要时就知道谁说了什么。知道人数时选上会更准。")
+                Text("打开后，原文每句会标上「说话人1 / 说话人2」。这一步在手机上算，长录音会发烫，建议只给短对话开。不开也行：AI 整理会议纪要时会按上下文（点名、自称）推断发言人。")
             }
 
             Section {

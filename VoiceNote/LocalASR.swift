@@ -395,7 +395,7 @@ enum LocalRecognizer {
 
     private static func run(url: URL, package p: ModelPackage,
                             progress: @escaping (Double) -> Void) throws -> [TranscriptSegment] {
-        let cores = max(2, min(4, ProcessInfo.processInfo.activeProcessorCount - 2))
+        let cores = 2   // 线程多了手机很烫
         let modelConfig: SherpaOnnxOfflineModelConfig
         if p == .qwen3 {
             let q = sherpaOnnxOfflineQwen3ASRModelConfig(
@@ -439,6 +439,7 @@ enum LocalRecognizer {
             while !vad.isEmpty() {
                 let seg = vad.front()
                 vad.pop()
+                ThermalGuard.breathe()
                 let samples = seg.samples
                 let start = Double(seg.start) / 16000
                 let dur = Double(samples.count) / 16000
@@ -513,6 +514,7 @@ enum Diarizer {
                 SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback(
                     sd, buf.baseAddress, Int32(buf.count),
                     { done, total, arg in
+                        ThermalGuard.breathe()
                         if let arg, total > 0 {
                             Unmanaged<DiarizeProgress>.fromOpaque(arg).takeUnretainedValue()
                                 .f(Double(done) / Double(total))

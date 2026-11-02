@@ -273,6 +273,11 @@ enum AppConfig {
     static let defaultSiliconModel = "FunAudioLLM/SenseVoiceSmall"
 
     static func registerDefaults() {
+        // 区分说话人在手机上算很烫，改成默认关（只迁移一次，之后尊重用户的选择）
+        if !ud.bool(forKey: "diarizeOffMigrated") {
+            ud.set(false, forKey: SettingsKey.diarize)
+            ud.set(true, forKey: "diarizeOffMigrated")
+        }
         var d: [String: Any] = [
             SettingsKey.asrEngine: ASREngine.apple.rawValue,
             SettingsKey.appleLocale: "zh-CN",
