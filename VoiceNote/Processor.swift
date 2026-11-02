@@ -20,6 +20,47 @@ final class Processor: ObservableObject {
     @Published var toast: String?
     /// 整理进度说明，比如「思考中」「已写 1200 字」
     @Published var organizeInfo: [UUID: String] = [:]
+    /// 正在总结重点的录音
+    @Published var summarizing: Set<UUID> = []
+
+    func summarizeHighlights(_ rec: Recording, using override: ModelRef? = nil) {
+        let id = rec.id
+        guard !summarizing.contains(id) else { return }
+        let items = rec.highlights
+            .sorted { ($0.start ?? .greatestFiniteMagnitude) < ($1.start ?? .greatestFiniteMagnitude) }
+            .map(\.text)
+        guard !items.isEmpty else { return }
+        let ref = override ?? AppConfig.modelFor(.general)
+        guard let key = Keychain.get(ref.provider.keyName) else {
+            lastError = "还没填 \(ref.provider.label) 的 API Key，到 设置 → 服务商与密钥 里填"
+            return
+        }
+        summarizing.insert(id)
+        let old = rec.highlightSummary
+        let box = StreamBox()
+        Task { @MainActor in
+            defer { self.summarizing.remove(id) }
+            do {
+                let md = try await Organizer.summarizeHighlights(
+                    items, provider: ref.provider, apiKey: key,
+                    baseURL: AppConfig.llmBaseURL(ref.provider), model: ref.model
+                ) { text, _ in
+                    Task { @MainActor in
+                        guard !box.finished, !text.isEmpty, Date().timeIntervalSince(box.lastUI) > 0.4 else { return }
+                        box.lastUI = Date()
+                        rec.highlightSummary = Organizer.clean(text)
+                    }
+                }
+                box.finished = true
+                rec.highlightSummary = md
+            } catch {
+                box.finished = true
+                rec.highlightSummary = old
+                self.lastError = "总结重点失败：\(error.localizedDescription)"
+            }
+            self.save()
+        }
+    }
 
     func showToast(_ text: String) {
         toast = text

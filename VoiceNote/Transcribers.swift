@@ -422,6 +422,7 @@ enum OpenAIClient {
 
 enum Organizer {
     private static let common = """
+    格式说明：〔 〕里是要你填的内容，输出时不要保留〔 〕和里面的说明文字。第一行是「# 」加上不超过15个字的标题，标题必须和「# 」写在同一行。
     你是录音整理助手。用户会给你一段语音自动转写的原文，里面可能有同音错字、口头禅、重复、断句混乱，也可能夹杂粤语或方言。
     根据上下文修正明显的同音错字和专有名词，不要编造原文没有的内容。只输出下面格式的 Markdown，不要多余的解释。
     """
@@ -438,7 +439,7 @@ enum Organizer {
         switch style {
         case .general:
             format = """
-            # 标题（不超过15个字，概括主题）
+            # 〔标题〕
 
             ## 摘要
             用3到5句话说清楚这段录音讲了什么。
@@ -456,7 +457,7 @@ enum Organizer {
             """
         case .meeting:
             format = """
-            # 会议主题（不超过15个字）
+            # 〔会议主题〕
 
             ## 会议概要
             - 参会人：能从内容判断出的人名或角色，判断不出就写“未提及”
@@ -487,7 +488,7 @@ enum Organizer {
             """
         case .conversation:
             format = """
-            # 标题（不超过15个字，谁和谁聊了什么）
+            # 〔标题：谁和谁聊了什么〕
 
             ## 摘要
             3到5句话：谈话双方是谁（能判断的话）、主要聊了什么、结果如何。
@@ -504,7 +505,7 @@ enum Organizer {
             """
         case .lecture:
             format = """
-            # 标题（不超过15个字，课程或讲座主题）
+            # 〔课程或讲座主题〕
 
             ## 摘要
             3到5句话概括主要内容。
@@ -567,6 +568,37 @@ enum Organizer {
         String(format: "%.1f", t)
     }
 
+    static let highlightPrompt = """
+    下面是用户从一段录音里挑出来的重点句，按时间顺序排列，可能有重复或口语。
+    请归纳成下面的 Markdown，只输出这些内容：
+
+    ## 一句话总结
+    用一句话说清楚这些重点讲的是什么。
+
+    ## 核心要点
+    - 合并重复的意思，按重要程度列 3 到 7 条，每条一句话
+
+    ## 需要跟进
+    - [ ] 这些重点里提到的要做的事（谁、什么时候）
+    没有就写“无”。
+    """
+
+    static func summarizeHighlights(_ items: [String], provider: LLMProvider, apiKey: String,
+                                    baseURL: String, model: String,
+                                    onProgress: ((String, Int) -> Void)? = nil) async throws -> String {
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": highlightPrompt],
+                ["role": "user", "content": items.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")],
+            ],
+            "temperature": 0.3,
+        ]
+        let out = try await OpenAIClient.chatStream(baseURL: baseURL, apiKey: apiKey, body: body,
+                                                    timeout: 300, onDelta: onProgress ?? { _, _ in })
+        return clean(out)
+    }
+
     static func test(provider: LLMProvider, apiKey: String, baseURL: String, model: String) async throws -> String {
         let body: [String: Any] = [
             "model": model,
@@ -594,13 +626,24 @@ enum Organizer {
     }
 
     static func extractTitle(_ markdown: String) -> String? {
-        for line in markdown.components(separatedBy: "\n") {
-            let l = line.trimmingCharacters(in: .whitespaces)
-            if l.hasPrefix("# ") {
-                let title = OrganizedParser.stripMarkers(String(l.dropFirst(2))).trimmingCharacters(in: .whitespaces)
-                return title.isEmpty ? nil : String(title.prefix(30))
+        let lines = markdown.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        for (i, l) in lines.enumerated() where l.hasPrefix("# ") {
+            var title = OrganizedParser.stripMarkers(String(l.dropFirst(2))).trimmingCharacters(in: .whitespaces)
+            title = title.replacingOccurrences(of: "〔", with: "").replacingOccurrences(of: "〕", with: "")
+            if isPlaceholder(title) {
+                // 模型把说明照抄了，真正的标题在下一行
+                if let next = lines[(i + 1)...].first(where: { !$0.isEmpty }), !next.hasPrefix("#") {
+                    title = next
+                } else {
+                    return nil
+                }
             }
+            return title.isEmpty ? nil : String(title.prefix(30))
         }
         return nil
+    }
+
+    static func isPlaceholder(_ t: String) -> Bool {
+        t.contains("不超过") || t.contains("个字") || t == "标题" || t == "会议主题" || t.hasPrefix("标题（")
     }
 }

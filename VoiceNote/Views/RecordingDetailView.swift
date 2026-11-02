@@ -176,6 +176,9 @@ struct RecordingDetailView: View {
     }
 
     private func refresh() {
+        if Organizer.isPlaceholder(rec.title), let t = Organizer.extractTitle(rec.summary) {
+            rec.title = t
+        }
         marks = rec.highlights
         segs = rec.segments
         lines = OrganizedParser.parse(rec.summary, segments: segs)
@@ -295,32 +298,30 @@ struct RecordingDetailView: View {
             }
 
             Menu {
-                Section("① 选模型") {
+                Menu {
                     Button {
                         modelChoice = ""
                     } label: {
-                        Label("自动（按设置里每种整理方式的模型）",
-                              systemImage: modelChoice.isEmpty ? "checkmark.circle.fill" : "circle")
+                        Label("自动（按每种整理方式的设置）", systemImage: modelChoice.isEmpty ? "checkmark" : "")
                     }
-                    .menuActionDismissBehavior(.disabled)
                     ForEach(AppConfig.quickModels) { r in
                         Button {
                             modelChoice = r.storage
                         } label: {
-                            Label(r.label, systemImage: modelChoice == r.storage ? "checkmark.circle.fill" : "circle")
+                            Label(r.label, systemImage: modelChoice == r.storage ? "checkmark" : "")
                         }
-                        .menuActionDismissBehavior(.disabled)
                     }
+                } label: {
+                    Label("模型：\(ModelRef(storage: modelChoice)?.model ?? "自动")", systemImage: "cpu")
                 }
-                Section("② 选整理方式开始整理") {
-                    ForEach(OrganizeStyle.allCases) { st in
-                        Button {
-                            let r = ModelRef(storage: modelChoice)
-                            processor.requestOrganize(rec, style: st, using: r.map { ($0.provider, $0.model) })
-                        } label: {
-                            Label(modelChoice.isEmpty ? "\(st.label)（\(AppConfig.modelFor(st).model)）" : st.label,
-                                  systemImage: st.icon)
-                        }
+                Divider()
+                ForEach(OrganizeStyle.allCases) { st in
+                    Button {
+                        let r = ModelRef(storage: modelChoice)
+                        processor.requestOrganize(rec, style: st, using: r.map { ($0.provider, $0.model) })
+                    } label: {
+                        Label(st.label, systemImage: st.icon)
+                        Text((ModelRef(storage: modelChoice) ?? AppConfig.modelFor(st)).model)
                     }
                 }
             } label: {
@@ -427,6 +428,74 @@ struct RecordingDetailView: View {
         marks.sorted { ($0.start ?? .greatestFiniteMagnitude, $0.createdAt) < ($1.start ?? .greatestFiniteMagnitude, $1.createdAt) }
     }
 
+    @ViewBuilder private var highlightSummaryCard: some View {
+        let busy = processor.summarizing.contains(rec.id)
+        let ref = ModelRef(storage: modelChoice) ?? AppConfig.modelFor(.general)
+        if rec.highlightSummary.isEmpty && !busy {
+            Button {
+                processor.summarizeHighlights(rec, using: ModelRef(storage: modelChoice))
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "sparkles")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("AI 总结这 \(marks.count) 条重点").font(.subheadline.weight(.bold))
+                        Text("用 \(ref.model)").font(.caption).opacity(0.85)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption.weight(.bold))
+                }
+                .foregroundStyle(.white)
+                .padding(16)
+                .background(Theme.aiGradient, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+            .buttonStyle(.plain)
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("重点总结", systemImage: "sparkles")
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(Theme.ai)
+                    if busy { ProgressView().scaleEffect(0.7) }
+                    Spacer()
+                    if !busy {
+                        Button { copy(OrganizedParser.stripMarkers(rec.highlightSummary)) } label: {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        Button { processor.summarizeHighlights(rec, using: ModelRef(storage: modelChoice)) } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .padding(.leading, 8)
+                    }
+                }
+                .font(.subheadline)
+                if rec.highlightSummary.isEmpty {
+                    Text("正在总结…").font(.subheadline).foregroundStyle(.secondary)
+                } else {
+                    let lines = OrganizedParser.parse(rec.highlightSummary, segments: [])
+                    ForEach(OrgSection.build(from: lines)) { sec in
+                        VStack(alignment: .leading, spacing: 8) {
+                            if !sec.title.isEmpty {
+                                Text(sec.title).font(.caption.weight(.bold)).foregroundStyle(.secondary)
+                            }
+                            ForEach(sec.lines) { l in OrgLineView(line: l, active: false) }
+                        }
+                        .padding(.top, 4)
+                    }
+                }
+            }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Theme.ai.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Theme.ai.opacity(0.25), lineWidth: 1)
+            )
+            .textSelection(.enabled)
+        }
+    }
+
     @ViewBuilder private var highlightsContent: some View {
         if marks.isEmpty {
             EmptyHint(icon: "highlighter",
@@ -434,6 +503,7 @@ struct RecordingDetailView: View {
                       text: "在「整理」或「原文」页点右边的荧光笔，再点句子就会收进这里；\n也可以长按句子选「标为重点」")
         } else {
             VStack(alignment: .leading, spacing: 12) {
+                highlightSummaryCard
                 HStack {
                     TipLine(text: "点一条播放 · 长按复制、分享或移除")
                     Spacer()
@@ -937,9 +1007,12 @@ struct OrgSection: Identifiable {
     static func build(from lines: [OrganizedLine]) -> [OrgSection] {
         var out: [OrgSection] = []
         var current = OrgSection(id: -1, title: "", lines: [])
+        var seenSection = false
         for line in lines {
             let t = line.text.trimmingCharacters(in: .whitespaces)
             if t.hasPrefix("# ") { continue } // 标题已经显示在顶部
+            if t.hasPrefix("## ") { seenSection = true }
+            if !seenSection && lines.contains(where: { $0.text.hasPrefix("## ") }) { continue } // 标题区多出来的行
             if t.hasPrefix("## ") || t.hasPrefix("### ") {
                 if !current.lines.isEmpty || !current.title.isEmpty { out.append(current) }
                 let title = t.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)

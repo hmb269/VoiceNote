@@ -42,6 +42,7 @@ final class Recording {
     var segmentsData: Data? = nil
     var isFavorite: Bool = false
     var highlightsData: Data? = nil
+    var highlightSummary: String = ""
 
     var highlights: [Highlight] {
         get {
