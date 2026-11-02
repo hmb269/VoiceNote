@@ -304,9 +304,11 @@ struct RecordingDetailView: View {
     private var style: OrganizeStyle {
         pickedStyle ?? OrganizeStyle(rawValue: rec.organizedStyle) ?? AppConfig.organizeStyle
     }
-    private var modelForStyle: String {
-        (ModelRef(storage: modelChoice) ?? AppConfig.modelFor(style)).model
+    /// 这次整理用的模型：菜单里选过就用选的，没选过用设置里这种整理方式对应的
+    private var effectiveModel: ModelRef {
+        ModelRef(storage: modelChoice) ?? AppConfig.modelFor(style)
     }
+    private var modelForStyle: String { effectiveModel.model }
 
     /// 一个栏目两个按钮：左边直接执行，右边选方式
     private func splitBar<M: View>(icon: String, title: String, option: String, optionIcon: String,
@@ -382,8 +384,8 @@ struct RecordingDetailView: View {
                      foreground: .white,
                      background: AnyShapeStyle(Theme.aiGradient),
                      action: {
-                         let r = ModelRef(storage: modelChoice)
-                         processor.requestOrganize(rec, style: style, using: r.map { ($0.provider, $0.model) })
+                         let r = effectiveModel
+                         processor.requestOrganize(rec, style: style, using: (r.provider, r.model))
                      }) {
                 Section("整理方式") {
                     ForEach(OrganizeStyle.allCases) { st in
@@ -399,18 +401,11 @@ struct RecordingDetailView: View {
                     }
                 }
                 Section("模型") {
-                    Button {
-                        modelChoice = ""
-                    } label: {
-                        let t = "自动（\(AppConfig.modelFor(style).model)）"
-                        if modelChoice.isEmpty { Label(t, systemImage: "checkmark") } else { Text(t) }
-                        Text("按设置里每种整理方式指定的模型")
-                    }
                     ForEach(AppConfig.quickModels) { r in
                         Button {
                             modelChoice = r.storage
                         } label: {
-                            if modelChoice == r.storage {
+                            if effectiveModel == r {
                                 Label(r.model, systemImage: "checkmark")
                             } else {
                                 Text(r.model)
