@@ -173,6 +173,16 @@ final class Processor: ObservableObject {
                 }
             } else {
                 try FileManager.default.copyItem(at: url, to: dest)
+                // 后缀和真实格式不符（比如叫 .mp3 其实是 aac），按真实格式改名
+                if !AudioTools.isReadable(dest), let real = AudioTools.sniffExtension(dest), real != ext {
+                    let fixed = Storage.recordingsDir.appendingPathComponent("\(UUID().uuidString).\(real)")
+                    try FileManager.default.moveItem(at: dest, to: fixed)
+                    if AudioTools.isReadable(fixed) {
+                        ingest(fileName: fixed.lastPathComponent, source: .imported, createdAt: created, title: title)
+                        return true
+                    }
+                    try FileManager.default.moveItem(at: fixed, to: dest)
+                }
                 // 系统读不了的格式（aac 裸流、amr 等）转成 m4a
                 if !AudioTools.isReadable(dest) {
                     let m4a = Storage.recordingsDir.appendingPathComponent("\(UUID().uuidString).m4a")

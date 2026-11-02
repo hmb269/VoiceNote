@@ -12,6 +12,46 @@ private final class EndFlag {
 }
 
 enum AudioTools {
+    /// 看文件开头的字节判断真实格式（很多文件后缀是 mp3，里面其实是 aac/m4a/amr）
+    static func sniffExtension(_ url: URL) -> String? {
+        guard let fh = FileHandle(forReadingAtPath: url.path) else { return nil }
+        defer { try? fh.close() }
+        var head = [UInt8](fh.readData(ofLength: 4096))
+        guard head.count >= 12 else { return nil }
+        func ascii(_ r: Range<Int>) -> String { String(bytes: head[r], encoding: .ascii) ?? "" }
+        if ascii(4..<8) == "ftyp" { return "m4a" }
+        if ascii(0..<4) == "RIFF" { return "wav" }
+        if ascii(0..<4) == "OggS" { return "ogg" }
+        if ascii(0..<4) == "fLaC" { return "flac" }
+        if ascii(0..<4) == "caff" { return "caf" }
+        if ascii(0..<4) == "FORM" { return "aiff" }
+        if ascii(0..<5) == "#!AMR" { return ascii(0..<8) == "#!AMR-WB" ? "awb" : "amr" }
+        if ascii(0..<9).contains("SILK") || ascii(1..<10).contains("SILK") { return "silk" }
+        // 跳过 ID3 标签再看帧头
+        var i = 0
+        if ascii(0..<3) == "ID3", head.count >= 10 {
+            let size = (Int(head[6]) << 21) | (Int(head[7]) << 14) | (Int(head[8]) << 7) | Int(head[9])
+            let skip = 10 + size
+            if skip + 4 > head.count {
+                try? fh.seek(toOffset: UInt64(skip))
+                head = [UInt8](fh.readData(ofLength: 4096))
+                i = 0
+            } else {
+                i = skip
+            }
+        }
+        while i + 1 < head.count {
+            if head[i] == 0xFF && (head[i + 1] & 0xE0) == 0xE0 {
+                // 0xFFF1 / 0xFFF9 是 AAC ADTS，其余是 MP3
+                return (head[i + 1] & 0xF6) == 0xF0 ? "aac" : "mp3"
+            }
+            if i + 8 < head.count, String(bytes: head[(i + 4)..<(i + 8)], encoding: .ascii) == "ftyp" { return "m4a" }
+            i += 1
+            if i > 2048 { break }
+        }
+        return nil
+    }
+
     /// 系统能不能直接读这个音频
     static func isReadable(_ url: URL) -> Bool {
         guard let f = try? AVAudioFile(forReading: url) else { return false }
@@ -21,6 +61,15 @@ enum AudioTools {
     /// 读不了的格式（微信 silk 除外）转成 m4a：先用系统导出，不行再逐帧解码重编码
     static func convertToM4A(_ src: URL, dest: URL) async throws {
         try? FileManager.default.removeItem(at: dest)
+        var src = src
+        if let real = sniffExtension(src), real != src.pathExtension.lowercased() {
+            let fixed = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).\(real)")
+            try? FileManager.default.copyItem(at: src, to: fixed)
+            src = fixed
+        }
+        if src.pathExtension == "silk" {
+            throw VNError("这是微信语音（silk 格式），iOS 不能直接解码。请在微信里转发到电脑，用工具转成 mp3 再导入")
+        }
         let asset = AVURLAsset(url: src)
         if let s = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) {
             s.outputURL = dest
