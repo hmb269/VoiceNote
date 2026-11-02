@@ -68,6 +68,7 @@ final class PhoneRecorder: ObservableObject {
         levels = Array(repeating: 0, count: 36)
         UIApplication.shared.isIdleTimerDisabled = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        BackgroundKeeper.shared.kick()
         return (fileName, startedAt)
     }
 }

@@ -15,7 +15,9 @@ final class Processor: ObservableObject {
 
     var container: ModelContainer? = DataStore.shared
     @Published var progress: [UUID: Double] = [:]
-    @Published var busy: Set<UUID> = []
+    @Published var busy: Set<UUID> = [] {
+        didSet { BackgroundKeeper.shared.update(active: !busy.isEmpty) }
+    }
     @Published var lastError: String?
     @Published var toast: String?
     /// 整理进度说明，比如「思考中」「已写 1200 字」
@@ -252,11 +254,11 @@ final class Processor: ObservableObject {
         guard !busy.contains(id) else { return }
         busy.insert(id)
         progress[id] = 0
-        let bgTask = UIApplication.shared.beginBackgroundTask(withName: "transcribe", expirationHandler: nil)
+        let bgTask = BGTaskBox.begin("transcribe")
         defer {
             busy.remove(id)
             progress[id] = nil
-            UIApplication.shared.endBackgroundTask(bgTask)
+            bgTask.end()
         }
 
         rec.status = .transcribing
@@ -331,10 +333,10 @@ final class Processor: ObservableObject {
             return
         }
         busy.insert(id)
-        let bgTask = UIApplication.shared.beginBackgroundTask(withName: "organize", expirationHandler: nil)
+        let bgTask = BGTaskBox.begin("organize")
         defer {
             busy.remove(id)
-            UIApplication.shared.endBackgroundTask(bgTask)
+            bgTask.end()
         }
 
         rec.status = .organizing
@@ -384,5 +386,23 @@ final class Processor: ObservableObject {
             rec.errorMessage = "整理失败：\(error.localizedDescription)"
         }
         save()
+    }
+}
+
+/// 后台任务：到时间自己结束，不让系统因为超时把 App 杀掉
+@MainActor
+final class BGTaskBox {
+    private var id: UIBackgroundTaskIdentifier = .invalid
+    static func begin(_ name: String) -> BGTaskBox {
+        let b = BGTaskBox()
+        b.id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak b] in
+            Task { @MainActor in b?.end() }
+        }
+        return b
+    }
+    func end() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
     }
 }
