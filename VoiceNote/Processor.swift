@@ -257,7 +257,8 @@ final class Processor: ObservableObject {
         let all = (try? context.fetch(FetchDescriptor<Recording>())) ?? []
         var toResume: [(Recording, ASREngine)] = []
         for rec in all where !busy.contains(rec.id) {
-            if rec.status == .transcribing,
+            // 文字已经存下来的（卡在区分说话人）就不再自动重跑，免得手机又发烫
+            if rec.status == .transcribing, !rec.hasSpeech,
                let raw = UserDefaults.standard.string(forKey: "resumeEngine-\(rec.id)"),
                let engine = ASREngine(rawValue: raw) {
                 toResume.append((rec, engine))

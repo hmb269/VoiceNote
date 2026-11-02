@@ -488,13 +488,13 @@ enum Diarizer {
                       progress: @escaping (Double) -> Void = { _ in }) async throws -> [TranscriptSegment] {
         let p = ModelPackage.diarization
         guard p.isReady, !segs.isEmpty else { return segs }
-        return try await Task.detached(priority: .userInitiated) {
+        return try await Task.detached(priority: .utility) {
             var samples: [Float] = []
             try AudioTools.forEach16kMono(url: url) { samples += $0 }
             guard samples.count > 16000 else { return segs }
             progress(0.02)
 
-            let threads = Int32(max(2, min(4, ProcessInfo.processInfo.activeProcessorCount - 2)))
+            let threads: Int32 = 2   // 多线程更快但手机很烫，长录音宁可慢一点
             var config = sherpaOnnxOfflineSpeakerDiarizationConfig(
                 segmentation: sherpaOnnxOfflineSpeakerSegmentationModelConfig(
                     pyannote: sherpaOnnxOfflineSpeakerSegmentationPyannoteModelConfig(
