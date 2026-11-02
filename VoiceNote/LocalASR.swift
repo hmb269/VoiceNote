@@ -15,6 +15,15 @@ struct ModelFileSpec {
     var direct: [String] = []  // 备用直链（GitHub Release 等）
     var minBytes = 1_000
     var optional = false
+    var inArchive = false     // 从压缩包里解出来，不单独下载
+}
+
+/// 整个打包下载的模型（GitHub Release 的 .tar.bz2）
+struct ModelArchive {
+    let urls: [String]
+    let stripPrefix: String
+    let keep: (String) -> Bool
+    let approxMB: Int
 }
 
 enum ModelPackage: String, CaseIterable, Identifiable {
@@ -64,12 +73,11 @@ enum ModelPackage: String, CaseIterable, Identifiable {
                 Self.vad,
             ]
         case .qwen3:
-            let repo = "csukuangfj/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25"
             return [
-                ModelFileSpec(local: "conv_frontend.onnx", repo: repo, remote: "conv_frontend.onnx", minBytes: 100_000),
-                ModelFileSpec(local: "encoder.int8.onnx", repo: repo, remote: "encoder.int8.onnx", minBytes: 10_000_000),
-                ModelFileSpec(local: "decoder.int8.onnx", repo: repo, remote: "decoder.int8.onnx", minBytes: 10_000_000),
-                ModelFileSpec(local: "tokenizer/", repo: repo, remote: "tokenizer/"),
+                ModelFileSpec(local: "conv_frontend.onnx", repo: "", remote: "", minBytes: 100_000, inArchive: true),
+                ModelFileSpec(local: "encoder.int8.onnx", repo: "", remote: "", minBytes: 10_000_000, inArchive: true),
+                ModelFileSpec(local: "decoder.int8.onnx", repo: "", remote: "", minBytes: 10_000_000, inArchive: true),
+                ModelFileSpec(local: "tokenizer/", repo: "", remote: "", inArchive: true),
                 Self.vad,
             ]
         case .diarization:
@@ -81,6 +89,22 @@ enum ModelPackage: String, CaseIterable, Identifiable {
                               direct: ["https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"],
                               minBytes: 5_000_000),
             ]
+        }
+    }
+
+    /// 只能整包下载的模型
+    var archive: ModelArchive? {
+        switch self {
+        case .qwen3:
+            let name = "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25"
+            let gh = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/\(name).tar.bz2"
+            return ModelArchive(
+                urls: [gh, "https://ghfast.top/" + gh, "https://gh-proxy.com/" + gh],
+                stripPrefix: name + "/",
+                keep: { !$0.hasPrefix("test_wavs") && !$0.hasSuffix(".md") && !$0.hasSuffix(".py") },
+                approxMB: 900)
+        default:
+            return nil
         }
     }
 
@@ -176,8 +200,39 @@ final class ModelDownloader: ObservableObject {
     private static func fetch(_ p: ModelPackage,
                               report: @escaping (Double, String) -> Void) async throws {
         // 把目录展开成具体文件
+        // 先处理整包（下载 → 解压 → 删掉压缩包）
+        if let arc = p.archive, p.files.contains(where: { $0.inArchive && !fileReady(p, $0) }) {
+            let tmp = p.dir.appendingPathComponent("_download.tar.bz2")
+            var ok = false
+            var lastError: Error = VNError("下载失败")
+            for u in arc.urls {
+                guard let url = URL(string: u) else { continue }
+                let host = url.host ?? ""
+                do {
+                    try await downloadWithRetry(url, to: tmp, minBytes: 50_000_000) { frac in
+                        report(frac * 0.85, "正在从 \(host) 下载模型包  \(Int(frac * 100))%")
+                    }
+                    ok = true
+                    break
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    lastError = error
+                }
+            }
+            if !ok { throw lastError }
+            report(0.85, "正在解压…")
+            let dest = p.dir
+            try await Task.detached(priority: .userInitiated) {
+                try TarBz2.extract(tmp, to: dest, stripPrefix: arc.stripPrefix, keep: arc.keep) { f in
+                    report(0.85 + f * 0.13, "正在解压  \(Int(f * 100))%")
+                }
+            }.value
+            try? FileManager.default.removeItem(at: tmp)
+        }
+
         var jobs: [(local: String, repo: String, remote: String, direct: [String], minBytes: Int)] = []
-        for f in p.files {
+        for f in p.files where !f.inArchive {
             if f.remote.hasSuffix("/") {
                 let names = try await listDir(repo: f.repo, prefix: f.remote)
                 for n in names {
@@ -227,6 +282,14 @@ final class ModelDownloader: ObservableObject {
             done += weights[i]
             report(done / total, "\(job.local) 完成")
         }
+    }
+
+    private static func fileReady(_ p: ModelPackage, _ f: ModelFileSpec) -> Bool {
+        if f.local.hasSuffix("/") {
+            return !((try? FileManager.default.contentsOfDirectory(atPath: p.path(f.local))) ?? []).isEmpty
+        }
+        let size = ((try? FileManager.default.attributesOfItem(atPath: p.path(f.local)))?[.size] as? NSNumber)?.intValue ?? 0
+        return size >= f.minBytes
     }
 
     /// 列出仓库里某个目录下的文件
