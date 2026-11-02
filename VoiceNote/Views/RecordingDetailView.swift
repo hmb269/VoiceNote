@@ -54,8 +54,8 @@ struct RecordingDetailView: View {
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
         .overlay(alignment: .bottomTrailing) {
             MiniPlayer(player: player, singleSentence: $singleSentence, showFull: $showFullPlayer)
-                .padding(.trailing, 6)
-                .padding(.bottom, 0)
+                .padding(.trailing, 4)
+                .padding(.bottom, -4)
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
@@ -628,7 +628,7 @@ struct MiniPlayer: View {
                     .offset(x: -size / 2 - 6, y: size / 2 - 6)
             }
         }
-        .frame(width: size + 24, height: size + 24)
+        .frame(width: size + 44, height: size + 44)
         .contentShape(Circle())
         .onTapGesture {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()

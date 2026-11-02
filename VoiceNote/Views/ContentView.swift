@@ -7,7 +7,6 @@ enum RootTab: Hashable {
 }
 
 struct ContentView: View {
-    @StateObject private var recorder = PhoneRecorder()
     @ObservedObject private var processor = Processor.shared
     @AppStorage("appearance") private var appearance = 1
     @State private var tab: RootTab = .home
@@ -36,7 +35,6 @@ struct ContentView: View {
                 SearchView()
             }
         }
-        .modifier(RecordAccessoryModifier(recorder: recorder) { alertText = $0 })
         .tint(Theme.accent)
         .preferredColorScheme(scheme)
         .overlay(alignment: .top) {
@@ -72,44 +70,35 @@ struct ContentView: View {
 struct HomeView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \Recording.createdAt, order: .reverse) private var recordings: [Recording]
+    @StateObject private var recorder = PhoneRecorder()
     @State private var showPicker = false
+    @State private var showCalendar = false
     @State private var heroPage = 0
     @State private var toDelete: Recording?
+    @State private var selectedDay = Calendar.current.startOfDay(for: Date())
 
     private var heroItems: [Recording] { Array(recordings.prefix(6)) }
-    private var favorites: [Recording] { recordings.filter(\.isFavorite) }
+
+    private var weekDays: [Date] {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        return (0..<7).reversed().compactMap { cal.date(byAdding: .day, value: -$0, to: today) }
+    }
+
+    private func items(on day: Date) -> [Recording] {
+        let cal = Calendar.current
+        return recordings.filter { cal.isDate($0.createdAt, inSameDayAs: day) }
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 30) {
+                VStack(alignment: .leading, spacing: 26) {
                     if recordings.isEmpty {
                         EmptyHero()
                     } else {
                         hero
-                        if !favorites.isEmpty {
-                            shelf(title: "收藏", items: favorites)
-                        }
-                        ForEach(DayGroup.make(recordings)) { g in
-                            VStack(alignment: .leading, spacing: 12) {
-                                SectionTitle(text: g.title)
-                                VStack(spacing: 0) {
-                                    ForEach(Array(g.items.enumerated()), id: \.element.id) { i, rec in
-                                        NavigationLink(value: rec) {
-                                            RecordingRow(rec: rec)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .contextMenu { RowMenu(rec: rec) { toDelete = rec } }
-                                        if i < g.items.count - 1 {
-                                            Divider().padding(.leading, 84)
-                                        }
-                                    }
-                                }
-                                .padding(.vertical, 6)
-                                .cardBackground(cornerRadius: 24)
-                                .padding(.horizontal, 16)
-                            }
-                        }
+                        weekSection
                     }
                 }
                 .padding(.bottom, 40)
@@ -122,12 +111,30 @@ struct HomeView: View {
                     Button { showPicker = true } label: { Image(systemName: "square.and.arrow.down") }
                         .accessibilityLabel("导入音频")
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    RecordToolbarButton(recorder: recorder)
+                }
             }
             .toolbarBackground(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .bottom) {
+                if recorder.isRecording {
+                    RecordingBanner(recorder: recorder)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 6)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.spring(duration: 0.35), value: recorder.isRecording)
             .navigationDestination(for: Recording.self) { RecordingDetailView(rec: $0) }
+            .navigationDestination(for: String.self) { key in
+                if key == "all" { AllRecordingsView() }
+            }
             .sheet(isPresented: $showPicker) {
                 DocumentPicker { urls in Processor.shared.importFiles(urls) }
                     .ignoresSafeArea()
+            }
+            .sheet(isPresented: $showCalendar) {
+                CalendarSheet()
             }
             .confirmationDialog("删除这条录音？", isPresented: Binding(
                 get: { toDelete != nil }, set: { if !$0 { toDelete = nil } }
@@ -166,26 +173,232 @@ struct HomeView: View {
                 .padding(.bottom, 4)
             }
         }
-        .frame(height: 520)
+        .frame(height: 500)
     }
 
-    private func shelf(title: String, items: [Recording]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionTitle(text: title)
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: 14) {
-                    ForEach(items) { rec in
-                        NavigationLink(value: rec) {
-                            PosterCard(rec: rec, width: 150)
+    // 最近七天：日期条 + 当天的录音
+    private var weekSection: some View {
+        let dayItems = items(on: selectedDay)
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("最近七天")
+                    .font(.system(.title3, design: .rounded).weight(.bold))
+                Spacer()
+                NavigationLink(value: "all") {
+                    HStack(spacing: 3) {
+                        Text("全部录音")
+                        Image(systemName: "chevron.right").font(.caption.weight(.bold))
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Theme.accent)
+                }
+                Button { showCalendar = true } label: {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 34, height: 34)
+                        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 6)
+                .accessibilityLabel("按日历选择")
+            }
+            .padding(.horizontal, 20)
+
+            HStack(spacing: 0) {
+                ForEach(weekDays, id: \.self) { d in
+                    DayCell(date: d,
+                            selected: Calendar.current.isDate(d, inSameDayAs: selectedDay),
+                            count: items(on: d).count)
+                        .frame(maxWidth: .infinity)
+                        .onTapGesture {
+                            UISelectionFeedbackGenerator().selectionChanged()
+                            withAnimation(.snappy(duration: 0.25)) { selectedDay = d }
                         }
-                        .buttonStyle(.plain)
-                        .contextMenu { RowMenu(rec: rec) { toDelete = rec } }
+                }
+            }
+            .padding(.horizontal, 12)
+
+            Group {
+                if dayItems.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "waveform.slash")
+                            .font(.system(size: 30, weight: .light))
+                            .foregroundStyle(.secondary)
+                        Text("这天没有录音").font(.headline)
+                        Text("换一天看看，或者点右上角的麦克风开始录")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 34)
+                } else {
+                    RecordingList(items: dayItems) { toDelete = $0 }
+                }
+            }
+            .cardBackground(cornerRadius: 24)
+            .padding(.horizontal, 16)
+            .animation(.snappy(duration: 0.25), value: selectedDay)
+        }
+    }
+}
+
+struct DayCell: View {
+    let date: Date
+    let selected: Bool
+    let count: Int
+
+    private static let weekday: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "EEE"
+        return f
+    }()
+
+    var body: some View {
+        VStack(spacing: 5) {
+            Text("\(Calendar.current.component(.day, from: date))")
+                .font(.system(.title3, design: .rounded).weight(.bold))
+            Text(Calendar.current.isDateInToday(date) ? "今天" : Self.weekday.string(from: date))
+                .font(.caption.weight(.medium))
+                .foregroundStyle(selected ? Theme.accent : Color.secondary)
+            Circle()
+                .fill(count > 0 ? Theme.accent : Color.clear)
+                .frame(width: 5, height: 5)
+        }
+        .padding(.vertical, 9)
+        .frame(width: 48)
+        .background {
+            if selected {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(.secondarySystemBackground))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+/// 一组录音的行列表（带封面小图标），放在卡片里
+struct RecordingList: View {
+    let items: [Recording]
+    var onDelete: (Recording) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { i, rec in
+                NavigationLink(value: rec) {
+                    RecordingRow(rec: rec)
+                }
+                .buttonStyle(.plain)
+                .contextMenu { RowMenu(rec: rec) { onDelete(rec) } }
+                if i < items.count - 1 {
+                    Divider().padding(.leading, 84)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+struct AllRecordingsView: View {
+    @Environment(\.modelContext) private var context
+    @Query(sort: \Recording.createdAt, order: .reverse) private var recordings: [Recording]
+    @State private var toDelete: Recording?
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 22) {
+                ForEach(DayGroup.make(recordings)) { g in
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(g.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 22)
+                        RecordingList(items: g.items) { toDelete = $0 }
+                            .cardBackground(cornerRadius: 22)
+                            .padding(.horizontal, 16)
                     }
                 }
-                .padding(.horizontal, 20)
             }
-            .scrollIndicators(.hidden)
+            .padding(.vertical, 12)
         }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("全部录音")
+        .confirmationDialog("删除这条录音？", isPresented: Binding(
+            get: { toDelete != nil }, set: { if !$0 { toDelete = nil } }
+        ), titleVisibility: .visible) {
+            Button("删除", role: .destructive) {
+                if let r = toDelete { deleteRecording(r, context: context) }
+            }
+        }
+    }
+}
+
+struct CalendarSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var context
+    @Query(sort: \Recording.createdAt, order: .reverse) private var recordings: [Recording]
+    @State private var day = Date()
+    @State private var toDelete: Recording?
+
+    private var items: [Recording] {
+        recordings.filter { Calendar.current.isDate($0.createdAt, inSameDayAs: day) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    DatePicker("选择日期", selection: $day, in: ...Date(), displayedComponents: .date)
+                        .datePickerStyle(.graphical)
+                        .environment(\.locale, Locale(identifier: "zh_CN"))
+                        .tint(Theme.accent)
+                        .padding(10)
+                        .cardBackground(cornerRadius: 24)
+
+                    HStack {
+                        Text(DayGroup.title(for: Calendar.current.startOfDay(for: day)))
+                            .font(.headline)
+                        Spacer()
+                        Text("\(items.count) 条").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 6)
+
+                    if items.isEmpty {
+                        Text("这天没有录音")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 30)
+                            .cardBackground(cornerRadius: 22)
+                    } else {
+                        RecordingList(items: items) { toDelete = $0 }
+                            .cardBackground(cornerRadius: 22)
+                    }
+                }
+                .padding(16)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("按日期查看")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+            .navigationDestination(for: Recording.self) { RecordingDetailView(rec: $0) }
+            .confirmationDialog("删除这条录音？", isPresented: Binding(
+                get: { toDelete != nil }, set: { if !$0 { toDelete = nil } }
+            ), titleVisibility: .visible) {
+                Button("删除", role: .destructive) {
+                    if let r = toDelete { deleteRecording(r, context: context) }
+                }
+            }
+        }
+        .presentationDetents([.large])
     }
 }
 
@@ -392,7 +605,7 @@ struct EmptyHero: View {
             Text("开始你的第一段录音")
                 .font(.system(.title2, design: .rounded).weight(.bold))
             VStack(alignment: .leading, spacing: 8) {
-                Label("点下方「开始录音」，锁屏也能继续", systemImage: "mic")
+                Label("点右上角的麦克风开始录，锁屏也能继续", systemImage: "mic")
                 Label("手表上录的会自动同步过来", systemImage: "applewatch")
                 Label("右上角导入，或从语音备忘录分享", systemImage: "square.and.arrow.down")
             }
@@ -463,8 +676,6 @@ struct FavoritesView: View {
     private var favorites: [Recording]
     @State private var toDelete: Recording?
 
-    private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
-
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -482,23 +693,12 @@ struct FavoritesView: View {
                     .padding(.top, 160)
                     .padding(.horizontal, 40)
                 } else {
-                    LazyVGrid(columns: columns, spacing: 22) {
-                        ForEach(favorites) { rec in
-                            NavigationLink(value: rec) {
-                                GeometryReader { geo in
-                                    PosterCard(rec: rec, width: geo.size.width)
-                                }
-                                .aspectRatio(0.62, contentMode: .fit)
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu { RowMenu(rec: rec) { toDelete = rec } }
-                        }
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 8)
-                    .padding(.bottom, 40)
+                    RecordingList(items: favorites) { toDelete = $0 }
+                        .cardBackground(cornerRadius: 24)
+                        .padding(16)
                 }
             }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("收藏")
             .navigationDestination(for: Recording.self) { RecordingDetailView(rec: $0) }
             .confirmationDialog("删除这条录音？", isPresented: Binding(
@@ -592,98 +792,77 @@ struct SearchView: View {
     }
 }
 
-// MARK: - 底部录音条（iOS 26 放在标签栏上方）
+// MARK: - 录音按钮（右上角）和录音中的横幅
 
-struct RecordAccessoryModifier: ViewModifier {
+struct RecordToolbarButton: View {
     @ObservedObject var recorder: PhoneRecorder
-    var onError: (String) -> Void
 
-    func body(content: Content) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            content.tabViewBottomAccessory {
-                RecordAccessory(recorder: recorder, onError: onError)
+    var body: some View {
+        Button(action: { toggleRecording(recorder) }) {
+            if recorder.isRecording {
+                HStack(spacing: 6) {
+                    Image(systemName: "stop.fill")
+                    Text(formatDuration(recorder.elapsed)).monospacedDigit()
+                }
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(Theme.accent)
+            } else {
+                Image(systemName: "mic.fill")
+                    .foregroundStyle(Theme.accent)
             }
-        } else {
-            fallback(content)
         }
-        #else
-        fallback(content)
-        #endif
+        .accessibilityLabel(recorder.isRecording ? "停止录音" : "开始录音")
     }
+}
 
-    private func fallback(_ content: Content) -> some View {
-        content.overlay(alignment: .bottom) {
-            RecordAccessory(recorder: recorder, onError: onError)
-                .padding(.vertical, 10)
-                .glassBackground(cornerRadius: 30)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 64)
+struct RecordingBanner: View {
+    @ObservedObject var recorder: PhoneRecorder
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Circle()
+                .fill(Theme.accent)
+                .frame(width: 10, height: 10)
+                .opacity(pulse ? 0.35 : 1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("录音中").font(.caption.weight(.semibold)).foregroundStyle(Theme.accent)
+                Text(formatDuration(recorder.elapsed))
+                    .font(.system(.title3, design: .rounded).weight(.bold).monospacedDigit())
+            }
+            LiveLevels(levels: Array(recorder.levels.suffix(22)))
+                .frame(maxWidth: .infinity)
+            Button { toggleRecording(recorder) } label: {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(.white)
+                    .frame(width: 18, height: 18)
+                    .frame(width: 50, height: 50)
+                    .background(Theme.recordGradient, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("停止录音")
+        }
+        .padding(.leading, 18)
+        .padding(.trailing, 8)
+        .padding(.vertical, 8)
+        .glassBackground(cornerRadius: 34)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { pulse = true }
         }
     }
 }
 
-struct RecordAccessory: View {
-    @ObservedObject var recorder: PhoneRecorder
-    var onError: (String) -> Void
-    @State private var pulse = false
-
-    var body: some View {
-        Button(action: toggle) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(Theme.recordGradient)
-                    if recorder.isRecording {
-                        RoundedRectangle(cornerRadius: 3).fill(.white).frame(width: 11, height: 11)
-                    } else {
-                        Image(systemName: "mic.fill").font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
-                    }
-                }
-                .frame(width: 32, height: 32)
-                .scaleEffect(recorder.isRecording && pulse ? 1.08 : 1)
-
-                if recorder.isRecording {
-                    Text(formatDuration(recorder.elapsed))
-                        .font(.system(.body, design: .rounded).weight(.semibold).monospacedDigit())
-                    LiveLevels(levels: Array(recorder.levels.suffix(24)))
-                        .frame(maxWidth: .infinity, maxHeight: 26)
-                        .clipped()
-                    Text("停止")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Theme.accent)
-                } else {
-                    Text("开始录音")
-                        .font(.system(.body, design: .rounded).weight(.semibold))
-                    Spacer()
-                    Text("锁屏也能录")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.horizontal, 14)
-            .contentShape(Rectangle())
+@MainActor
+func toggleRecording(_ recorder: PhoneRecorder) {
+    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    if recorder.isRecording {
+        if let r = recorder.stop() {
+            Processor.shared.ingest(fileName: r.fileName, source: .phone, createdAt: r.startedAt)
+            Processor.shared.showToast("已保存，正在转写")
         }
-        .buttonStyle(.plain)
-        .onChange(of: recorder.isRecording) { _, rec in
-            if rec {
-                withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { pulse = true }
-            } else {
-                pulse = false
-            }
-        }
-    }
-
-    private func toggle() {
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        if recorder.isRecording {
-            if let r = recorder.stop() {
-                Processor.shared.ingest(fileName: r.fileName, source: .phone, createdAt: r.startedAt)
-                Processor.shared.showToast("已保存，正在转写")
-            }
-        } else {
-            Task {
-                do { try await recorder.start() } catch { onError(error.localizedDescription) }
-            }
+    } else {
+        Task { @MainActor in
+            do { try await recorder.start() } catch { Processor.shared.lastError = error.localizedDescription }
         }
     }
 }
