@@ -310,9 +310,14 @@ enum FileTranscriber {
 
 /// 去掉 Whisper 在静音处常见的「幻听」句子
 enum WhisperFilter {
-    static let junk = ["字幕由", "请不吝点赞", "订阅", "打赏支持", "明镜与点点", "Amara.org", "字幕志愿者", "感谢观看", "謝謝觀看"]
+    /// 给 Whisper 的提示要写成「例句」而不是指令，否则它会把指令原样吐回来
+    static let prompt = "嗯，好的。那我们开始吧，今天主要说一下这个事情。"
 
-    static func clean(_ s: String) -> String {
+    static let junk = ["请使用简体中文", "并加上标点符号", "以下是普通话的句子", prompt, "那我们开始吧", "字幕由", "请不吝点赞", "订阅", "打赏支持", "明镜与点点", "Amara.org", "字幕志愿者", "感谢观看", "謝謝觀看"]
+
+    static func clean(_ raw: String) -> String {
+        // 繁体转简体
+        let s = raw.applyingTransform(StringTransform("Hant-Hans"), reverse: false) ?? raw
         let parts = s.components(separatedBy: CharacterSet(charactersIn: "。！？\n"))
         if parts.contains(where: { p in junk.contains { p.contains($0) } }) {
             return parts.filter { p in !junk.contains { p.contains($0) } }
@@ -354,7 +359,7 @@ enum Transcription {
                 apiKey: try key(.groq), model: AppConfig.groqModel,
                 chunkSeconds: 60, name: "Groq",
                 extra: ["language": "zh", "temperature": "0",
-                        "prompt": "以下是普通话的句子，请使用简体中文，并加上标点符号。"],
+                        "prompt": WhisperFilter.prompt],
                 progress: progress)
         case .aliyun:
             return try await AliyunTranscriber.transcribe(url: url, apiKey: try key(.aliyun),

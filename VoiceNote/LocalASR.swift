@@ -492,17 +492,13 @@ enum Diarizer {
                         model: p.path("segmentation.onnx"), windowShiftRatio: 0.1),
                     numThreads: 2),
                 embedding: sherpaOnnxSpeakerEmbeddingExtractorConfig(model: p.path("embedding.onnx"), numThreads: 2),
-                clustering: sherpaOnnxFastClusteringConfig(numClusters: speakers > 0 ? speakers : -1, threshold: 0.6)
+                clustering: sherpaOnnxFastClusteringConfig(numClusters: speakers > 0 ? speakers : -1, threshold: 0.8)
             )
             let sd = SherpaOnnxOfflineSpeakerDiarizationWrapper(config: &config)
             let turns = sd.process(samples: samples)
             guard !turns.isEmpty else { return segs }
 
-            // 按出场顺序重新编号：第一个说话的是 1
-            var order: [Int: Int] = [:]
-            for t in turns where order[t.speaker] == nil { order[t.speaker] = order.count + 1 }
-
-            return segs.map { seg in
+            let assigned: [Int] = segs.map { seg in
                 var best = -1
                 var bestOverlap = 0.0
                 for t in turns {
@@ -510,12 +506,17 @@ enum Diarizer {
                     if o > bestOverlap { bestOverlap = o; best = t.speaker }
                 }
                 if best < 0 {
-                    // 没重叠就找最近的
                     let mid = (seg.start + seg.end) / 2
                     best = turns.min { abs(Double($0.start + $0.end) / 2 - mid) < abs(Double($1.start + $1.end) / 2 - mid) }?.speaker ?? 0
                 }
+                return best
+            }
+            // 只按实际出现在句子里的人重新编号：第一个说话的是 1，第二个是 2
+            var order: [Int: Int] = [:]
+            for sp in assigned where order[sp] == nil { order[sp] = order.count + 1 }
+            return zip(segs, assigned).map { seg, sp in
                 var s = seg
-                s.speaker = order[best]
+                s.speaker = order[sp]
                 return s
             }
         }.value
