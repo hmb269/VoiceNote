@@ -80,13 +80,14 @@ enum WebMDecoder {
                 let size = Int(min(sz.value, UInt64(data.count - start)))
                 pos = start + size
                 switch id {
-                case 0xD7: current?.number = Int(uint(start, size))
+                case 0xD7: let v = Int(uint(start, size)); current?.number = v
                 case 0x86:
-                    current?.codec = String(decoding: data[(data.startIndex + start)..<(data.startIndex + start + size)], as: UTF8.self)
+                    let v = String(decoding: data[(data.startIndex + start)..<(data.startIndex + start + size)], as: UTF8.self)
                         .trimmingCharacters(in: .controlCharacters)
-                case 0x9F: current?.channels = max(1, Int(uint(start, size)))
-                case 0xB5: current?.rate = float(start, size)
-                case 0x63A2: current?.privateData = data[(data.startIndex + start)..<(data.startIndex + start + size)]
+                    current?.codec = v
+                case 0x9F: let v = max(1, Int(uint(start, size))); current?.channels = v
+                case 0xB5: let v = float(start, size); current?.rate = v
+                case 0x63A2: let v = data[(data.startIndex + start)..<(data.startIndex + start + size)]; current?.privateData = v
                 case 0xA3, 0xA1:                              // SimpleBlock / Block
                     guard let a = pickAudio() else { continue }
                     var p = start
