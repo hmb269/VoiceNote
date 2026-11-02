@@ -53,9 +53,6 @@ struct ContentView: View {
                 value: RootTab.record) {
                 Color.clear
             }
-            Tab("导入", systemImage: "square.and.arrow.down", value: RootTab.importFile) {
-                Color.clear
-            }
             Tab("设置", systemImage: "gearshape.fill", value: RootTab.settings) {
                 SettingsView(showDone: false)
             }
@@ -72,10 +69,7 @@ struct ContentView: View {
             }
         }
         .animation(.spring(duration: 0.35), value: recorder.isRecording)
-        .sheet(isPresented: $showPicker) {
-            DocumentPicker { urls in Processor.shared.importFiles(urls) }
-                .ignoresSafeArea()
-        }
+
         .tint(Theme.accent)
         .preferredColorScheme(scheme)
         .overlay(alignment: .top) {
@@ -112,6 +106,7 @@ struct HomeView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \Recording.createdAt, order: .reverse) private var recordings: [Recording]
     @State private var showCalendar = false
+    @State private var showPicker = false
     @State private var toDelete: Recording?
     @State private var selectedDay = Calendar.current.startOfDay(for: Date())
 
@@ -130,10 +125,9 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
+                    weekSection
                     if recordings.isEmpty {
                         EmptyHero()
-                    } else {
-                        weekSection
                     }
                 }
                 .padding(.top, 12)
@@ -145,6 +139,10 @@ struct HomeView: View {
             .navigationDestination(for: Recording.self) { RecordingDetailView(rec: $0) }
             .navigationDestination(for: String.self) { key in
                 if key == "all" { AllRecordingsView() }
+            }
+            .sheet(isPresented: $showPicker) {
+                DocumentPicker { urls in Processor.shared.importFiles(urls) }
+                    .ignoresSafeArea()
             }
             .sheet(isPresented: $showCalendar) {
                 CalendarSheet()
@@ -186,6 +184,16 @@ struct HomeView: View {
                 .buttonStyle(.plain)
                 .padding(.leading, 6)
                 .accessibilityLabel("按日历选择")
+                Button { showPicker = true } label: {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                        .frame(width: 34, height: 34)
+                        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 4)
+                .accessibilityLabel("导入音频")
             }
             .padding(.horizontal, 20)
 
@@ -592,13 +600,13 @@ struct EmptyHero: View {
             VStack(alignment: .leading, spacing: 8) {
                 Label("点底部的「录音」开始录，锁屏也能继续", systemImage: "mic")
                 Label("手表上录的会自动同步过来", systemImage: "applewatch")
-                Label("点底部的「导入」，或从语音备忘录分享", systemImage: "square.and.arrow.down")
+                Label("右上角导入，或从语音备忘录分享", systemImage: "square.and.arrow.down")
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 140)
+        .padding(.top, 20)
     }
 }
 
